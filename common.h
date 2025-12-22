@@ -28,4 +28,36 @@
 #define KEY_SEM 5678
 #define KEY_MSG 9012
 
+typedef struct {
+    int zajetosc;
+    int druzyna;
+} Stanowisko;
+
+typedef struct {
+    int kolejka_zwykla;
+    int kolejka_vip;
+    int aktywne_kasy[LICZBA_KAS];
+    int sprzedane_bilety[LICZBA_SEKTOROW + 1];
+    Stanowisko bramki[LICZBA_SEKTOROW][2];
+    int blokada_sektora[LICZBA_SEKTOROW];
+    int ewakuacja_trwa;
+    int status_meczu;
+    int czas_pozostaly;
+} SharedState;
+
+typedef struct {
+    long mtype;
+    int sektor_id;
+} MsgBilet;
+
+typedef struct {
+    long mtype;
+    int typ_sygnalu;
+    int sektor_id;
+} MsgSterujacy;
+
+#define SEM_SHM 0
+#define SEM_KASY 1
+#define SEM_SEKTOR_START 2
+
 #endif
