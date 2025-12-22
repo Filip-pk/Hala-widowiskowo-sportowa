@@ -1,5 +1,11 @@
 #include "common.h"
 
+union semun {
+    int val;
+    struct semid_ds *buf;
+    unsigned short *array;
+};
+
 int main() {
     printf("--- SETUP ---\n");
 
@@ -19,6 +25,25 @@ int main() {
     memset(stan, 0, sizeof(SharedState));
     shmdt(stan);
 
-    printf("[OK] SHM utworzone.\n");
+    int n_sem = 2 + LICZBA_SEKTOROW;
+    int semid = semget(KEY_SEM, n_sem, IPC_CREAT | 0600);
+    if (semid == -1) {
+        perror("semget");
+        shmctl(shmid, IPC_RMID, NULL);
+        exit(1);
+    }
+
+    union semun arg;
+    arg.val = 1;
+    for (int i = 0; i < n_sem; i++) {
+        if (semctl(semid, i, SETVAL, arg) == -1) {
+            perror("semctl");
+            shmctl(shmid, IPC_RMID, NULL);
+            semctl(semid, 0, IPC_RMID);
+            exit(1);
+        }
+    }
+
+    printf("[OK] SHM + SEM utworzone.\n");
     return 0;
 }
