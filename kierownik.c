@@ -4,6 +4,9 @@
 int main() {
     setbuf(stdout, NULL);
 
+    int msgid = msgget(KEY_MSG, 0600);
+    if (msgid == -1) { perror("msgget"); exit(1); }
+
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
     if (shmid == -1) { perror("shmget"); exit(1); }
 
@@ -40,8 +43,26 @@ int main() {
     }
 
     printf("--- KIEROWNIK URUCHOMIONY ---\n");
+    printf("Komendy: 1-Stop sektora, 2-Start sektora\n");
+    fflush(stdout);
 
-    waitpid(zegar, NULL, 0);
+    while (1) {
+        if (waitpid(zegar, NULL, WNOHANG) > 0) break;
+
+        int cmd, s;
+        if (scanf("%d", &cmd) == 1) {
+            if (cmd == 1 || cmd == 2) {
+                printf("Podaj nr sektora (0-7): ");
+                fflush(stdout);
+                if (scanf("%d", &s) == 1 && s >= 0 && s < LICZBA_SEKTOROW) {
+                    MsgSterujacy msg = {10 + s, cmd, s};
+                    if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) perror("msgsnd");
+                }
+            }
+        }
+        usleep(100000);
+    }
+
     shmdt(stan);
     return 0;
 }
