@@ -7,7 +7,7 @@ union semun {
 };
 
 int main() {
-    printf("--- SETUP ---\n");
+    printf("--- SETUP (STRICT MODE) ---\n");
 
     int shmid = shmget(KEY_SHM, sizeof(SharedState), IPC_CREAT | 0600);
     if (shmid == -1) {
@@ -23,6 +23,8 @@ int main() {
     }
 
     memset(stan, 0, sizeof(SharedState));
+    stan->aktywne_kasy[0] = 1;
+    stan->aktywne_kasy[1] = 1;
     shmdt(stan);
 
     int n_sem = 2 + LICZBA_SEKTOROW;
@@ -44,6 +46,14 @@ int main() {
         }
     }
 
-    printf("[OK] SHM + SEM utworzone.\n");
+    int msgid = msgget(KEY_MSG, IPC_CREAT | 0600);
+    if (msgid == -1) {
+        perror("msgget");
+        shmctl(shmid, IPC_RMID, NULL);
+        semctl(semid, 0, IPC_RMID);
+        exit(1);
+    }
+
+    printf("[OK] Zasoby utworzone.\n");
     return 0;
 }
