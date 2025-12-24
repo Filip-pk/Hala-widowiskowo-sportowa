@@ -13,6 +13,7 @@ int main(int argc, char *argv[]) {
     }
 
     int my_id = atoi(argv[1]);
+    (void)my_id;
     (void)argv[2];
 
     srand(time(NULL) ^ (getpid() << 16));
@@ -55,9 +56,13 @@ int main(int argc, char *argv[]) {
 
         int wybrane = -1;
         for (int i = 0; i < 2; i++) {
-            if (stan->bramki[sektor][i].zajetosc < MAX_NA_STANOWISKU) {
-                wybrane = i;
-                break;
+            int n = stan->bramki[sektor][i].zajetosc;
+            int d = stan->bramki[sektor][i].druzyna;
+            if (n < MAX_NA_STANOWISKU) {
+                if (n == 0 || d == druzyna) {
+                    wybrane = i;
+                    break;
+                }
             }
         }
 
