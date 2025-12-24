@@ -23,6 +23,7 @@ int main() {
     if (stan == (void*)-1) { perror("shmat"); exit(1); }
 
     printf("--- START SYMULACJI ---\n");
+    fflush(stdout);
 
     if (!fork()) {
         execl("./kierownik", "kierownik", NULL);
@@ -48,7 +49,7 @@ int main() {
             exit(1);
         }
 
-    int total_kibicow = (int)(K * 0.2);
+    int total_kibicow = (int)(K * 1.5);
     int active = 0;
 
     srand(time(NULL));
@@ -57,6 +58,8 @@ int main() {
     for (int i = 0; i < total_kibicow; i++) {
         while (waitpid(-1, NULL, WNOHANG) > 0) active--;
         if (active >= MAX_PROC) { wait(NULL); active--; }
+
+        if (stan->ewakuacja_trwa) break;
 
         if (!fork()) {
             char id[20];
@@ -69,6 +72,9 @@ int main() {
         active++;
         usleep(10000);
     }
+
+    printf("[MAIN] Koniec generowania kibiców. Czekam na procesy...\n");
+    fflush(stdout);
 
     while (wait(NULL) > 0);
     shmdt(stan);
