@@ -13,7 +13,6 @@ int main(int argc, char *argv[]) {
     }
 
     int my_id = atoi(argv[1]);
-    (void)my_id;
     (void)argv[2];
 
     srand(time(NULL) ^ (getpid() << 16));
@@ -47,6 +46,7 @@ int main(int argc, char *argv[]) {
 
     int sektor = b.sektor_id;
     int sem_sektor = SEM_SEKTOR_START + sektor;
+    int cierpliwosc = 0;
 
     while (1) {
         if (stan->ewakuacja_trwa) break;
@@ -58,11 +58,9 @@ int main(int argc, char *argv[]) {
         for (int i = 0; i < 2; i++) {
             int n = stan->bramki[sektor][i].zajetosc;
             int d = stan->bramki[sektor][i].druzyna;
-            if (n < MAX_NA_STANOWISKU) {
-                if (n == 0 || d == druzyna) {
-                    wybrane = i;
-                    break;
-                }
+            if (n < MAX_NA_STANOWISKU && (n == 0 || d == druzyna)) {
+                wybrane = i;
+                break;
             }
         }
 
@@ -86,6 +84,14 @@ int main(int argc, char *argv[]) {
         }
 
         sem_op(semid, sem_sektor, 1);
+
+        cierpliwosc++;
+        if (cierpliwosc >= LIMIT_CIERPLIWOSCI) {
+            printf("[AGRESJA] Kibic %d (Dr %d) odpala pod sektorem %d\n", my_id, druzyna, sektor);
+            fflush(stdout);
+            break;
+        }
+
         usleep(100000);
     }
 
