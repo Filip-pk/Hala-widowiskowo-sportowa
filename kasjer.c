@@ -78,6 +78,7 @@ int main(int argc, char *argv[]) {
 
         if (!klient_typ) { usleep(50000); continue; }
 
+        if (stan->ewakuacja_trwa) break;
         usleep(100000);
 
         int sektor = -1;
@@ -110,7 +111,12 @@ int main(int argc, char *argv[]) {
         MsgBilet msg;
         msg.mtype = 999;
         msg.sektor_id = sektor;
-        msgsnd(msgid, &msg, sizeof(int), 0);
+
+        if (!stan->ewakuacja_trwa) {
+            if (msgsnd(msgid, &msg, sizeof(int), 0) == -1) {
+                if (!(errno == EIDRM || errno == EINVAL)) perror("msgsnd");
+            }
+        }
     }
 
     shmdt(stan);

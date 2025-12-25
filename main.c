@@ -60,7 +60,10 @@ int main() {
 
     for (int i = 0; i < total_kibicow; i++) {
         while (waitpid(-1, NULL, WNOHANG) > 0) active--;
-        if (active >= MAX_PROC) { wait(NULL); active--; }
+        if (active >= MAX_PROC) {
+            wait(NULL);
+            active--;
+        }
 
         if (stan->ewakuacja_trwa) break;
 
@@ -82,13 +85,15 @@ int main() {
         }
 
         active++;
-        usleep(10000);
+        usleep(10000 + (rand() % 1000));
     }
 
     printf("[MAIN] Koniec generowania kibiców. Czekam na procesy...\n");
     fflush(stdout);
 
     while (wait(NULL) > 0);
+
     shmdt(stan);
+    system("./clean > /dev/null 2>&1");
     return 0;
 }

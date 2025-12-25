@@ -16,6 +16,7 @@ int main(int argc, char *argv[]) {
     int is_vip = atoi(argv[2]);
 
     srand(time(NULL) ^ (getpid() << 16));
+    int wiek = 10 + rand() % 60;
     int druzyna = rand() % 2;
 
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
@@ -30,46 +31,68 @@ int main(int argc, char *argv[]) {
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) exit(0);
 
+    if (wiek < 15 && !is_vip) usleep(1000);
+    if (stan->ewakuacja_trwa) { shmdt(stan); exit(0); }
+
     sem_op(semid, SEM_KASY, -1);
     if (is_vip) stan->kolejka_vip++;
     else stan->kolejka_zwykla++;
     sem_op(semid, SEM_KASY, 1);
 
-    MsgBilet b;
-    if (msgrcv(msgid, &b, sizeof(int), 999, 0) == -1) {
+    MsgBilet bilet;
+
+    while (1) {
+        if (stan->ewakuacja_trwa) {
+            shmdt(stan);
+            exit(0);
+        }
+
+        ssize_t r = msgrcv(msgid, &bilet, sizeof(int), 999, IPC_NOWAIT);
+        if (r >= 0) break;
+
+        if (errno == ENOMSG) { usleep(50000); continue; }
+        if (errno == EINTR) continue;
+        if (errno == EIDRM || errno == EINVAL) { shmdt(stan); exit(0); }
+
         shmdt(stan);
         exit(0);
     }
 
-    if (b.sektor_id == SEKTOR_VIP) {
+    if (bilet.sektor_id == -1) {
+        shmdt(stan);
+        exit(0);
+    }
+
+    int sektor = bilet.sektor_id;
+
+    if (sektor == SEKTOR_VIP) {
         printf("[VIP %d] Wejscie VIP\n", my_id);
         fflush(stdout);
         shmdt(stan);
-        return 0;
-    }
-
-    if (b.sektor_id < 0 || b.sektor_id >= LICZBA_SEKTOROW) {
-        shmdt(stan);
         exit(0);
     }
 
-    int sektor = b.sektor_id;
-    int sem_sektor = SEM_SEKTOR_START + sektor;
+    int sem_sektora = SEM_SEKTOR_START + sektor;
     int cierpliwosc = 0;
 
     while (1) {
         if (stan->ewakuacja_trwa) break;
         if (stan->blokada_sektora[sektor]) { usleep(200000); continue; }
 
-        sem_op(semid, sem_sektor, -1);
+        sem_op(semid, sem_sektora, -1);
 
         int wybrane = -1;
+        int powod = 0;
+
         for (int i = 0; i < 2; i++) {
             int n = stan->bramki[sektor][i].zajetosc;
             int d = stan->bramki[sektor][i].druzyna;
-            if (n < MAX_NA_STANOWISKU && (n == 0 || d == druzyna)) {
-                wybrane = i;
-                break;
+
+            if (n < MAX_NA_STANOWISKU) {
+                if (n == 0 || d == druzyna) { wybrane = i; break; }
+                else powod = 1;
+            } else {
+                if (powod == 0) powod = 2;
             }
         }
 
@@ -77,22 +100,26 @@ int main(int argc, char *argv[]) {
             stan->bramki[sektor][wybrane].zajetosc++;
             stan->bramki[sektor][wybrane].druzyna = druzyna;
 
-            printf("[SEKTOR %d|ST %d] Wchodzi %s. Stan: %d/3\n",
-                   sektor, wybrane, (druzyna == 0 ? "GOSP" : "GOSC"),
-                   stan->bramki[sektor][wybrane].zajetosc);
+            if (wiek < 15)
+                printf("[SEKTOR %d|ST %d] Wchodzi %s (+OPIEKUN). Stan: %d/3\n",
+                       sektor, wybrane, (druzyna == 0 ? "GOSP" : "GOSC"),
+                       stan->bramki[sektor][wybrane].zajetosc);
+            else
+                printf("[SEKTOR %d|ST %d] Wchodzi %s. Stan: %d/3\n",
+                       sektor, wybrane, (druzyna == 0 ? "GOSP" : "GOSC"),
+                       stan->bramki[sektor][wybrane].zajetosc);
+
             fflush(stdout);
 
-            sem_op(semid, sem_sektor, 1);
-
+            sem_op(semid, sem_sektora, 1);
             usleep(300000);
-
-            sem_op(semid, sem_sektor, -1);
+            sem_op(semid, sem_sektora, -1);
             stan->bramki[sektor][wybrane].zajetosc--;
-            sem_op(semid, sem_sektor, 1);
+            sem_op(semid, sem_sektora, 1);
             break;
         }
 
-        sem_op(semid, sem_sektor, 1);
+        sem_op(semid, sem_sektora, 1);
 
         cierpliwosc++;
         if (cierpliwosc >= LIMIT_CIERPLIWOSCI) {

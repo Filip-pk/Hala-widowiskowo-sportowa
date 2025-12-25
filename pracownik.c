@@ -21,7 +21,12 @@ int main(int argc, char *argv[]) {
 
     while (1) {
         MsgSterujacy msg;
-        if (msgrcv(msgid, &msg, sizeof(int) * 2, my_type, 0) == -1) break;
+        if (msgrcv(msgid, &msg, sizeof(int) * 2, my_type, 0) == -1) {
+            if (errno == EINTR) continue;
+            if (errno == EIDRM || errno == EINVAL) break;
+            perror("msgrcv");
+            break;
+        }
 
         if (msg.typ_sygnalu == 1) {
             stan->blokada_sektora[sektor] = 1;
@@ -38,11 +43,9 @@ int main(int argc, char *argv[]) {
             while (stan->bramki[sektor][0].zajetosc > 0 || stan->bramki[sektor][1].zajetosc > 0)
                 usleep(100000);
 
-            MsgSterujacy rap;
-            rap.mtype = 99;
-            rap.typ_sygnalu = 0;
-            rap.sektor_id = sektor;
-            msgsnd(msgid, &rap, sizeof(int) * 2, 0);
+            msg.mtype = 99;
+            msg.sektor_id = sektor;
+            if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) perror("msgsnd");
 
             printf("[TECH %d] Raport wysłany\n", sektor);
             fflush(stdout);
