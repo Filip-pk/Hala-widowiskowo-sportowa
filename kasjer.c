@@ -30,6 +30,7 @@ int main(int argc, char *argv[]) {
     int limit_sektor = K / 8;
     int limit_vip = (int)(K * 0.003);
     if (limit_vip < 1) limit_vip = 1;
+    int k_10 = K / 10;
 
     while (1) {
         if (stan->ewakuacja_trwa) break;
@@ -38,13 +39,41 @@ int main(int argc, char *argv[]) {
         int klient_typ = 0;
 
         sem_op(semid, SEM_KASY, -1);
-        if (stan->kolejka_vip > 0) {
+
+        int q_vip = stan->kolejka_vip;
+        int q_std = stan->kolejka_zwykla;
+        int total_queue = q_vip + q_std;
+
+        int N = 0;
+        for (int i = 0; i < LICZBA_KAS; i++) if (stan->aktywne_kasy[i]) N++;
+
+        int prog_zamykania = k_10 * (N - 1);
+        if (N > 2 && total_queue < prog_zamykania) {
+            if (id > 1) {
+                stan->aktywne_kasy[id] = 0;
+                sem_op(semid, SEM_KASY, 1);
+                continue;
+            }
+        }
+
+        int wymagane_kasy = (total_queue / k_10) + 1;
+        if (wymagane_kasy > N && N < LICZBA_KAS) {
+            for (int i = 0; i < LICZBA_KAS; i++) {
+                if (stan->aktywne_kasy[i] == 0) {
+                    stan->aktywne_kasy[i] = 1;
+                    break;
+                }
+            }
+        }
+
+        if (q_vip > 0) {
             stan->kolejka_vip--;
             klient_typ = 1;
-        } else if (stan->kolejka_zwykla > 0) {
+        } else if (q_std > 0) {
             stan->kolejka_zwykla--;
             klient_typ = 2;
         }
+
         sem_op(semid, SEM_KASY, 1);
 
         if (!klient_typ) { usleep(50000); continue; }
@@ -61,25 +90,21 @@ int main(int argc, char *argv[]) {
             }
             sem_op(semid, SEM_SHM, 1);
         } else {
-            sem_op(semid, SEM_SHM, -1);
             int start = rand() % LICZBA_SEKTOROW;
             for (int i = 0; i < LICZBA_SEKTOROW; i++) {
                 int s = (start + i) % LICZBA_SEKTOROW;
+                sem_op(semid, SEM_SHM, -1);
                 if (stan->sprzedane_bilety[s] < limit_sektor) {
                     int ile = (rand() % 2) + 1;
                     if (stan->sprzedane_bilety[s] + ile <= limit_sektor) stan->sprzedane_bilety[s] += ile;
                     else stan->sprzedane_bilety[s]++;
                     sektor = s;
-                    break;
                 }
+                sem_op(semid, SEM_SHM, 1);
+                if (sektor != -1) break;
             }
-            sem_op(semid, SEM_SHM, 1);
 
-            if (sektor == -1) {
-                stan->aktywne_kasy[id] = 0;
-                printf("[KASA %d] SOLD OUT\n", id);
-                fflush(stdout);
-            }
+            if (sektor == -1) stan->aktywne_kasy[id] = 0;
         }
 
         MsgBilet msg;
