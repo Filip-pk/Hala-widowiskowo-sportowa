@@ -22,6 +22,9 @@ int main() {
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) { perror("shmat"); exit(1); }
 
+    int max_vip = (int)(K * 0.003);
+    if (max_vip < 1) max_vip = 1;
+
     printf("--- START SYMULACJI ---\n");
     fflush(stdout);
 
@@ -50,7 +53,7 @@ int main() {
         }
 
     int total_kibicow = (int)(K * 1.5);
-    int active = 0;
+    int active = 0, vip_cnt = 0;
 
     srand(time(NULL));
     sleep(1);
@@ -61,10 +64,19 @@ int main() {
 
         if (stan->ewakuacja_trwa) break;
 
+        int is_vip = 0;
+        if (vip_cnt < max_vip) {
+            if ((rand() % 1000 < 3) || (total_kibicow - i <= max_vip - vip_cnt)) {
+                is_vip = 1;
+                vip_cnt++;
+            }
+        }
+
         if (!fork()) {
-            char id[20];
+            char id[20], v[8];
             sprintf(id, "%d", i);
-            execl("./kibic", "kibic", id, "0", NULL);
+            sprintf(v, "%d", is_vip);
+            execl("./kibic", "kibic", id, v, NULL);
             perror("execl");
             exit(1);
         }

@@ -13,7 +13,7 @@ int main(int argc, char *argv[]) {
     }
 
     int my_id = atoi(argv[1]);
-    (void)argv[2];
+    int is_vip = atoi(argv[2]);
 
     srand(time(NULL) ^ (getpid() << 16));
     int druzyna = rand() % 2;
@@ -31,7 +31,8 @@ int main(int argc, char *argv[]) {
     if (stan == (void*)-1) exit(0);
 
     sem_op(semid, SEM_KASY, -1);
-    stan->kolejka_zwykla++;
+    if (is_vip) stan->kolejka_vip++;
+    else stan->kolejka_zwykla++;
     sem_op(semid, SEM_KASY, 1);
 
     MsgBilet b;
@@ -39,6 +40,14 @@ int main(int argc, char *argv[]) {
         shmdt(stan);
         exit(0);
     }
+
+    if (b.sektor_id == SEKTOR_VIP) {
+        printf("[VIP %d] Wejscie VIP\n", my_id);
+        fflush(stdout);
+        shmdt(stan);
+        return 0;
+    }
+
     if (b.sektor_id < 0 || b.sektor_id >= LICZBA_SEKTOROW) {
         shmdt(stan);
         exit(0);
