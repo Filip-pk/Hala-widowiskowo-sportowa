@@ -5,6 +5,14 @@ static void sem_op(int semid, int idx, int op) {
     if (semop(semid, &sb, 1) == -1) exit(0);
 }
 
+static const char* team_color(int druzyna) {
+    return (druzyna == 0) ? CLR_DBLUE : CLR_PURPLE;
+}
+
+static const char* team_name(int druzyna) {
+    return (druzyna == 0) ? "GOSP" : "GOSC";
+}
+
 int main(int argc, char *argv[]) {
     setbuf(stdout, NULL);
     if (argc != 3) {
@@ -42,10 +50,7 @@ int main(int argc, char *argv[]) {
     MsgBilet bilet;
 
     while (1) {
-        if (stan->ewakuacja_trwa) {
-            shmdt(stan);
-            exit(0);
-        }
+        if (stan->ewakuacja_trwa) { shmdt(stan); exit(0); }
 
         ssize_t r = msgrcv(msgid, &bilet, sizeof(int), 999, IPC_NOWAIT);
         if (r >= 0) break;
@@ -58,15 +63,12 @@ int main(int argc, char *argv[]) {
         exit(0);
     }
 
-    if (bilet.sektor_id == -1) {
-        shmdt(stan);
-        exit(0);
-    }
+    if (bilet.sektor_id == -1) { shmdt(stan); exit(0); }
 
     int sektor = bilet.sektor_id;
 
     if (sektor == SEKTOR_VIP) {
-        printf("[VIP %d] Wejscie VIP\n", my_id);
+        printf(CLR_YELLOW "[VIP %d] WEJŚCIE VIP" CLR_RESET "\n", my_id);
         fflush(stdout);
         shmdt(stan);
         exit(0);
@@ -100,14 +102,21 @@ int main(int argc, char *argv[]) {
             stan->bramki[sektor][wybrane].zajetosc++;
             stan->bramki[sektor][wybrane].druzyna = druzyna;
 
-            if (wiek < 15)
-                printf("[SEKTOR %d|ST %d] Wchodzi %s (+OPIEKUN). Stan: %d/3\n",
-                       sektor, wybrane, (druzyna == 0 ? "GOSP" : "GOSC"),
+            const char *tc = team_color(druzyna);
+            const char *tn = team_name(druzyna);
+
+            if (wiek < 15) {
+                printf("[SEKTOR %d|ST %d] Wchodzi %s%s%s %s(+OPIEKUN)%s. Stan: %d/3\n",
+                       sektor, wybrane,
+                       tc, tn, CLR_RESET,
+                       CLR_LBLUE, CLR_RESET,
                        stan->bramki[sektor][wybrane].zajetosc);
-            else
-                printf("[SEKTOR %d|ST %d] Wchodzi %s. Stan: %d/3\n",
-                       sektor, wybrane, (druzyna == 0 ? "GOSP" : "GOSC"),
+            } else {
+                printf("[SEKTOR %d|ST %d] Wchodzi %s%s%s. Stan: %d/3\n",
+                       sektor, wybrane,
+                       tc, tn, CLR_RESET,
                        stan->bramki[sektor][wybrane].zajetosc);
+            }
 
             fflush(stdout);
 
@@ -123,7 +132,8 @@ int main(int argc, char *argv[]) {
 
         cierpliwosc++;
         if (cierpliwosc >= LIMIT_CIERPLIWOSCI) {
-            printf("[AGRESJA] Kibic %d (Dr %d) odpala pod sektorem %d\n", my_id, druzyna, sektor);
+            printf(CLR_RED "[AGRESJA] KIBIC %d (DR %d) W SZALE POD SEKTOREM %d !!!" CLR_RESET "\n",
+                   my_id, druzyna, sektor);
             fflush(stdout);
             break;
         }

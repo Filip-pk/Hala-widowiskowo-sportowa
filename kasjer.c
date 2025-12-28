@@ -34,7 +34,11 @@ int main(int argc, char *argv[]) {
 
     while (1) {
         if (stan->ewakuacja_trwa) break;
-        if (stan->aktywne_kasy[id] == 0) { usleep(100000); continue; }
+
+        if (stan->aktywne_kasy[id] == 0) {
+            usleep(100000);
+            continue;
+        }
 
         int klient_typ = 0;
 
@@ -51,6 +55,9 @@ int main(int argc, char *argv[]) {
         if (N > 2 && total_queue < prog_zamykania) {
             if (id > 1) {
                 stan->aktywne_kasy[id] = 0;
+                printf(CLR_RED "[KASA %d] ZAMYKAM SIĘ (kolejka=%d, próg=%d)" CLR_RESET "\n",
+                       id, total_queue, prog_zamykania);
+                fflush(stdout);
                 sem_op(semid, SEM_KASY, 1);
                 continue;
             }
@@ -61,6 +68,10 @@ int main(int argc, char *argv[]) {
             for (int i = 0; i < LICZBA_KAS; i++) {
                 if (stan->aktywne_kasy[i] == 0) {
                     stan->aktywne_kasy[i] = 1;
+                    printf(CLR_GREEN "[SYSTEM] OTWIERAM KASĘ %d (kolejka=%d, aktywne=%d->%d)"
+                           CLR_RESET "\n",
+                           i, total_queue, N, N + 1);
+                    fflush(stdout);
                     break;
                 }
             }
@@ -76,9 +87,13 @@ int main(int argc, char *argv[]) {
 
         sem_op(semid, SEM_KASY, 1);
 
-        if (!klient_typ) { usleep(50000); continue; }
+        if (!klient_typ) {
+            usleep(50000);
+            continue;
+        }
 
         if (stan->ewakuacja_trwa) break;
+
         usleep(100000);
 
         int sektor = -1;
@@ -100,12 +115,19 @@ int main(int argc, char *argv[]) {
                     if (stan->sprzedane_bilety[s] + ile <= limit_sektor) stan->sprzedane_bilety[s] += ile;
                     else stan->sprzedane_bilety[s]++;
                     sektor = s;
+
+                    printf("[KASA %d] Sprzedano %d bilety do sektora %d.\n", id, ile, s);
+                    fflush(stdout);
                 }
                 sem_op(semid, SEM_SHM, 1);
                 if (sektor != -1) break;
             }
 
-            if (sektor == -1) stan->aktywne_kasy[id] = 0;
+            if (sektor == -1) {
+                stan->aktywne_kasy[id] = 0;
+                printf(CLR_RED "[KASA %d] SOLD OUT - ZAMYKAM" CLR_RESET "\n", id);
+                fflush(stdout);
+            }
         }
 
         MsgBilet msg;

@@ -60,4 +60,12 @@ typedef struct {
 #define SEM_KASY 1
 #define SEM_SEKTOR_START 2
 
+#define CLR_RESET   "\033[0m"
+#define CLR_RED     "\033[1;31m"
+#define CLR_GREEN   "\033[1;32m"
+#define CLR_YELLOW  "\033[1;33m"
+#define CLR_PURPLE  "\033[1;35m"
+#define CLR_DBLUE   "\033[0;34m"
+#define CLR_LBLUE   "\033[1;36m"
+
 #endif
