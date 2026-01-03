@@ -9,6 +9,12 @@ union semun {
 int main() {
     printf("--- SETUP (STRICT MODE) ---\n");
 
+    FILE *rf = fopen("raport.txt", "w");
+    if (rf) {
+        fprintf(rf, "id typ sektor\n");
+        fclose(rf);
+    }
+
     int shmid = shmget(KEY_SHM, sizeof(SharedState), IPC_CREAT | 0600);
     if (shmid == -1) {
         perror("shmget");
@@ -25,9 +31,7 @@ int main() {
     memset(stan, 0, sizeof(SharedState));
     stan->aktywne_kasy[0] = 1;
     stan->aktywne_kasy[1] = 1;
-
     stan->next_kibic_id = DYN_ID_START;
-
     shmdt(stan);
 
     int n_sem = 2 + LICZBA_SEKTOROW;

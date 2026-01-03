@@ -1,5 +1,21 @@
 #include "common.h"
 
+#include <fcntl.h>
+#include <sys/file.h>
+
+static void append_report(int kibic_id, int is_vip, int wiek, int sektor) {
+    const char *typ = is_vip ? "vip" : (wiek < 15 ? "opiekun" : "zwykly");
+
+    int fd = open("raport.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd == -1) return;
+
+    if (flock(fd, LOCK_EX) == 0) {
+        dprintf(fd, "%d %s %d\n", kibic_id, typ, sektor);
+        flock(fd, LOCK_UN);
+    }
+    close(fd);
+}
+
 static void sem_op(int semid, int idx, int op) {
     struct sembuf sb = {idx, op, 0};
     if (semop(semid, &sb, 1) == -1) exit(0);
@@ -79,6 +95,8 @@ int main(int argc, char *argv[]) {
     if (bilet.sektor_id == -1) { shmdt(stan); exit(0); }
 
     int sektor = bilet.sektor_id;
+
+    append_report(my_id, (sektor == SEKTOR_VIP) ? 1 : is_vip, wiek, sektor);
 
     if (sektor == SEKTOR_VIP) {
         printf(CLR_YELLOW "[VIP %d] WEJŚCIE VIP" CLR_RESET "\n", my_id);
