@@ -19,6 +19,9 @@ int main() {
     int msgid = msgget(KEY_MSG, 0600);
     if (msgid == -1) { perror("msgget"); exit(1); }
 
+    (void)semid;
+    (void)msgid;
+
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) { perror("shmat"); exit(1); }
 
@@ -66,12 +69,23 @@ int main() {
         }
 
         if (stan->ewakuacja_trwa) break;
+        if (stan->sprzedaz_zakonczona) break;
 
         int is_vip = 0;
-        if (vip_cnt < max_vip) {
-            if ((rand() % 1000 < 3) || (total_kibicow - i <= max_vip - vip_cnt)) {
+
+        if (stan->standard_sold_out) {
+            if (vip_cnt < max_vip) {
                 is_vip = 1;
                 vip_cnt++;
+            } else {
+                break;
+            }
+        } else {
+            if (vip_cnt < max_vip) {
+                if ((rand() % 1000 < 3) || (total_kibicow - i <= max_vip - vip_cnt)) {
+                    is_vip = 1;
+                    vip_cnt++;
+                }
             }
         }
 

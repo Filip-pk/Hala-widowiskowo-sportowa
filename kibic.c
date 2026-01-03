@@ -3,19 +3,6 @@
 #include <fcntl.h>
 #include <sys/file.h>
 
-static void append_report(int kibic_id, int is_vip, int wiek, int sektor) {
-    const char *typ = is_vip ? "vip" : (wiek < 15 ? "opiekun" : "zwykly");
-
-    int fd = open("raport.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (fd == -1) return;
-
-    if (flock(fd, LOCK_EX) == 0) {
-        dprintf(fd, "%d %s %d\n", kibic_id, typ, sektor);
-        flock(fd, LOCK_UN);
-    }
-    close(fd);
-}
-
 static void sem_op(int semid, int idx, int op) {
     struct sembuf sb = {idx, op, 0};
     if (semop(semid, &sb, 1) == -1) exit(0);
@@ -29,10 +16,23 @@ static const char* team_name(int druzyna) {
     return (druzyna == 0) ? "GOSP" : "GOSC";
 }
 
+static void append_report(int kibic_id, int wiek, int sektor) {
+    const char *typ = (sektor == SEKTOR_VIP) ? "vip" : ((wiek < 15) ? "opiekun" : "zwykly");
+
+    int fd = open("raport.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd == -1) return;
+
+    if (flock(fd, LOCK_EX) == 0) {
+        dprintf(fd, "%d %s %d\n", kibic_id, typ, sektor);
+        flock(fd, LOCK_UN);
+    }
+    close(fd);
+}
+
 int main(int argc, char *argv[]) {
     setbuf(stdout, NULL);
     if (argc != 3 && argc != 4) {
-        fprintf(stderr, "Użycie: %s <id> <vip> [ma_juz_bilet] \n", argv[0]);
+        fprintf(stderr, "Użycie: %s <id> <vip> [ma_juz_bilet]\n", argv[0]);
         exit(1);
     }
 
@@ -59,6 +59,10 @@ int main(int argc, char *argv[]) {
     if (wiek < 15 && !is_vip) usleep(1000);
     if (stan->ewakuacja_trwa) { shmdt(stan); exit(0); }
 
+    if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { shmdt(stan); exit(0); }
+
+    if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { shmdt(stan); exit(0); }
+
     if (!ma_juz_bilet) {
         sem_op(semid, SEM_KASY, -1);
         if (is_vip) stan->kolejka_vip++;
@@ -68,6 +72,7 @@ int main(int argc, char *argv[]) {
         MsgKolejka req;
         req.mtype = is_vip ? MSGTYPE_VIP_REQ : MSGTYPE_STD_REQ;
         req.kibic_id = my_id;
+
         if (msgsnd(msgid, &req, sizeof(int), 0) == -1) {
             if (!(errno == EIDRM || errno == EINVAL)) perror("msgsnd");
             shmdt(stan);
@@ -76,15 +81,19 @@ int main(int argc, char *argv[]) {
     }
 
     MsgBilet bilet;
-
     while (1) {
         if (stan->ewakuacja_trwa) { shmdt(stan); exit(0); }
+        if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { shmdt(stan); exit(0); }
 
         long my_ticket_type = MSGTYPE_TICKET_BASE + my_id;
         ssize_t r = msgrcv(msgid, &bilet, sizeof(int), my_ticket_type, IPC_NOWAIT);
         if (r >= 0) break;
 
-        if (errno == ENOMSG) { usleep(50000); continue; }
+        if (errno == ENOMSG) {
+            if (!ma_juz_bilet && stan->standard_sold_out && !is_vip) { shmdt(stan); exit(0); }
+            usleep(50000);
+            continue;
+        }
         if (errno == EINTR) continue;
         if (errno == EIDRM || errno == EINVAL) { shmdt(stan); exit(0); }
 
@@ -96,7 +105,7 @@ int main(int argc, char *argv[]) {
 
     int sektor = bilet.sektor_id;
 
-    append_report(my_id, (sektor == SEKTOR_VIP) ? 1 : is_vip, wiek, sektor);
+    append_report(my_id, wiek, sektor);
 
     if (sektor == SEKTOR_VIP) {
         printf(CLR_YELLOW "[VIP %d] WEJŚCIE VIP" CLR_RESET "\n", my_id);
@@ -163,7 +172,7 @@ int main(int argc, char *argv[]) {
 
         cierpliwosc++;
         if (cierpliwosc >= LIMIT_CIERPLIWOSCI) {
-            printf(CLR_RED "[AGRESJA] KIBIC %d (DR %d) W SZALE POD SEKTOREM %d !!!" CLR_RESET "\n",
+            printf(CLR_RED "[AGRESJA] KIBIC %d (DR %d) W SZALE POD SEKTORM %d !!!" CLR_RESET "\n",
                    my_id, druzyna, sektor);
             fflush(stdout);
             break;
