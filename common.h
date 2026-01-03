@@ -43,6 +43,9 @@ typedef struct {
     int ewakuacja_trwa;
     int status_meczu;
     int czas_pozostaly;
+
+    // ID dla dynamicznie generowanych kibiców (np. "kolega" od 2. biletu)
+    int next_kibic_id;
 } SharedState;
 
 typedef struct {
@@ -56,6 +59,7 @@ typedef struct {
     int sektor_id;
 } MsgSterujacy;
 
+
 typedef struct {
     long mtype;
     int kibic_id;
@@ -64,6 +68,8 @@ typedef struct {
 #define MSGTYPE_VIP_REQ 1
 #define MSGTYPE_STD_REQ 2
 #define MSGTYPE_TICKET_BASE 10000
+
+#define DYN_ID_START 50000
 
 #define SEM_SHM 0
 #define SEM_KASY 1

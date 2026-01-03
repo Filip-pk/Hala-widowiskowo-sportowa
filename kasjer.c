@@ -1,8 +1,29 @@
 #include "common.h"
 
+#include <sys/wait.h>
+
 static void sem_op(int semid, int idx, int op) {
     struct sembuf sb = {idx, op, 0};
     if (semop(semid, &sb, 1) == -1) exit(0);
+}
+
+static void spawn_friend_kibic(int friend_id) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        char idbuf[32];
+        sprintf(idbuf, "%d", friend_id);
+        execl("./kibic", "kibic", idbuf, "0", "1", NULL);
+        _exit(1);
+    }
+}
+
+static void send_ticket(int msgid, int kibic_id, int sektor) {
+    MsgBilet msg;
+    msg.mtype = MSGTYPE_TICKET_BASE + kibic_id;
+    msg.sektor_id = sektor;
+    if (msgsnd(msgid, &msg, sizeof(int), 0) == -1) {
+        if (!(errno == EIDRM || errno == EINVAL)) perror("msgsnd");
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -14,6 +35,8 @@ int main(int argc, char *argv[]) {
 
     int id = atoi(argv[1]);
     srand(time(NULL) + id);
+
+    signal(SIGCHLD, SIG_IGN);
 
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
     if (shmid == -1) exit(1);
@@ -110,6 +133,8 @@ int main(int argc, char *argv[]) {
         usleep(100000);
 
         int sektor = -1;
+        int friend_id = -1;
+        int ile_sprzedane = 1;
 
         if (klient_typ == 1) {
             sem_op(semid, SEM_SHM, -1);
@@ -124,12 +149,26 @@ int main(int argc, char *argv[]) {
                 int s = (start + i) % LICZBA_SEKTOROW;
                 sem_op(semid, SEM_SHM, -1);
                 if (stan->sprzedane_bilety[s] < limit_sektor) {
-                    int ile = (rand() % 2) + 1;
-                    if (stan->sprzedane_bilety[s] + ile <= limit_sektor) stan->sprzedane_bilety[s] += ile;
-                    else stan->sprzedane_bilety[s]++;
-                    sektor = s;
+                    int chciane = (rand() % 2) + 1;
+                    int ile = 1;
+                    if (chciane == 2 && stan->sprzedane_bilety[s] + 2 <= limit_sektor) {
+                        ile = 2;
+                    }
 
-                    printf("[KASA %d] Sprzedano %d bilety do sektora %d.\n", id, ile, s);
+                    stan->sprzedane_bilety[s] += ile;
+                    sektor = s;
+                    ile_sprzedane = ile;
+
+                    if (ile == 2) {
+                        friend_id = stan->next_kibic_id++;
+                    }
+
+                    if (ile == 2) {
+                        printf("[KASA %d] Sprzedano 2 bilety do sektora %d (drugi dla kolegi %d).\n",
+                               id, s, friend_id);
+                    } else {
+                        printf("[KASA %d] Sprzedano 1 bilet do sektora %d.\n", id, s);
+                    }
                     fflush(stdout);
                 }
                 sem_op(semid, SEM_SHM, 1);
@@ -143,14 +182,16 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        MsgBilet msg;
-        msg.mtype = MSGTYPE_TICKET_BASE + kibic_id;
-        msg.sektor_id = sektor;
+        if (stan->ewakuacja_trwa) break;
 
-        if (!stan->ewakuacja_trwa) {
-            if (msgsnd(msgid, &msg, sizeof(int), 0) == -1) {
-                if (!(errno == EIDRM || errno == EINVAL)) perror("msgsnd");
-            }
+        if (sektor != -1 && friend_id != -1) {
+            spawn_friend_kibic(friend_id);
+        }
+
+        send_ticket(msgid, kibic_id, sektor);
+
+        if (sektor != -1 && friend_id != -1 && ile_sprzedane == 2) {
+            send_ticket(msgid, friend_id, sektor);
         }
     }
 

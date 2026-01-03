@@ -15,13 +15,14 @@ static const char* team_name(int druzyna) {
 
 int main(int argc, char *argv[]) {
     setbuf(stdout, NULL);
-    if (argc != 3) {
-        fprintf(stderr, "Użycie: %s <id> <vip>\n", argv[0]);
+    if (argc != 3 && argc != 4) {
+        fprintf(stderr, "Użycie: %s <id> <vip> [ma_juz_bilet] \n", argv[0]);
         exit(1);
     }
 
     int my_id = atoi(argv[1]);
     int is_vip = atoi(argv[2]);
+    int ma_juz_bilet = (argc == 4) ? atoi(argv[3]) : 0;
 
     srand(time(NULL) ^ (getpid() << 16));
     int wiek = 10 + rand() % 60;
@@ -42,18 +43,20 @@ int main(int argc, char *argv[]) {
     if (wiek < 15 && !is_vip) usleep(1000);
     if (stan->ewakuacja_trwa) { shmdt(stan); exit(0); }
 
-    sem_op(semid, SEM_KASY, -1);
-    if (is_vip) stan->kolejka_vip++;
-    else stan->kolejka_zwykla++;
-    sem_op(semid, SEM_KASY, 1);
+    if (!ma_juz_bilet) {
+        sem_op(semid, SEM_KASY, -1);
+        if (is_vip) stan->kolejka_vip++;
+        else stan->kolejka_zwykla++;
+        sem_op(semid, SEM_KASY, 1);
 
-    MsgKolejka req;
-    req.mtype = is_vip ? MSGTYPE_VIP_REQ : MSGTYPE_STD_REQ;
-    req.kibic_id = my_id;
-    if (msgsnd(msgid, &req, sizeof(int), 0) == -1) {
-        if (!(errno == EIDRM || errno == EINVAL)) perror("msgsnd");
-        shmdt(stan);
-        exit(0);
+        MsgKolejka req;
+        req.mtype = is_vip ? MSGTYPE_VIP_REQ : MSGTYPE_STD_REQ;
+        req.kibic_id = my_id;
+        if (msgsnd(msgid, &req, sizeof(int), 0) == -1) {
+            if (!(errno == EIDRM || errno == EINVAL)) perror("msgsnd");
+            shmdt(stan);
+            exit(0);
+        }
     }
 
     MsgBilet bilet;
