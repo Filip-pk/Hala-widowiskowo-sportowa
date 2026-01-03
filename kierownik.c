@@ -8,7 +8,12 @@ static void ewakuacja(int msgid, SharedState *stan) {
 
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
         MsgSterujacy msg = {10 + i, 3, i};
-        if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) perror("msgsnd");
+        if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
+            if (errno == EIDRM || errno == EINVAL) {
+                return;
+            }
+            perror("msgsnd");
+        }
     }
 
     printf("[KIEROWNIK] EWAKUACJA\n");
@@ -108,7 +113,9 @@ int main() {
                     fflush(stdout);
                     if (scanf("%d", &s) == 1 && s >= 0 && s < LICZBA_SEKTOROW) {
                         MsgSterujacy msg = {10 + s, cmd, s};
-                        if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) perror("msgsnd");
+                        if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
+                            if (!(errno == EIDRM || errno == EINVAL)) perror("msgsnd");
+                        }
                     }
                 }
             }

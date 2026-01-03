@@ -165,6 +165,7 @@ int main(int argc, char *argv[]) {
 
         if (klient_typ == 1) {
             int sektor = -1;
+            int set_all = 0;
 
             sem_op(semid, SEM_SHM, -1);
             if (stan->sprzedane_bilety[SEKTOR_VIP] < limit_vip) {
@@ -172,9 +173,15 @@ int main(int argc, char *argv[]) {
                 sektor = SEKTOR_VIP;
             }
             if (all_sold_out(stan, limit_sektor, limit_vip)) {
+                if (!stan->sprzedaz_zakonczona) set_all = 1;
                 stan->sprzedaz_zakonczona = 1;
             }
             sem_op(semid, SEM_SHM, 1);
+
+            if (set_all) {
+                printf(CLR_YELLOW "[SYSTEM] WSZYSTKIE BILETY WYPRZEDANE - koniec sprzedaży." CLR_RESET "\n");
+                fflush(stdout);
+            }
 
             send_ticket(msgid, kibic_id, sektor);
 
@@ -195,6 +202,7 @@ int main(int argc, char *argv[]) {
         int sektor = -1;
         int ile_sprzedane = 1;
         int friend_id = -1;
+        int set_standard_now = 0;
 
         int start = rand() % LICZBA_SEKTOROW;
         for (int i = 0; i < LICZBA_SEKTOROW; i++) {
@@ -216,7 +224,23 @@ int main(int argc, char *argv[]) {
                 if (ile == 2) {
                     friend_id = stan->next_kibic_id++;
                 }
+
+                if (!stan->standard_sold_out && standard_sold_out(stan, limit_sektor)) {
+                    stan->standard_sold_out = 1;
+                    set_standard_now = 1;
+                }
                 sem_op(semid, SEM_SHM, 1);
+
+                if (set_standard_now) {
+                    printf(CLR_YELLOW "[SYSTEM] STANDARD SOLD OUT - kończymy obsługę zwykłych kas." CLR_RESET "\n");
+                    fflush(stdout);
+
+                    sem_op(semid, SEM_KASY, -1);
+                    stan->kolejka_zwykla = 0;
+                    sem_op(semid, SEM_KASY, 1);
+
+                    cancel_queue_type(msgid, MSGTYPE_STD_REQ);
+                }
 
                 if (ile == 2) {
                     printf("[KASA %d] Sprzedano 2 bilety do sektora %d (drugi dla kolegi %d).\n",
@@ -245,6 +269,15 @@ int main(int argc, char *argv[]) {
                 set_all = 1;
             }
             sem_op(semid, SEM_SHM, 1);
+
+            if (set_standard) {
+                printf(CLR_YELLOW "[SYSTEM] STANDARD SOLD OUT - kończymy obsługę zwykłych kas." CLR_RESET "\n");
+                fflush(stdout);
+            }
+            if (set_all) {
+                printf(CLR_YELLOW "[SYSTEM] WSZYSTKIE BILETY WYPRZEDANE - koniec sprzedaży." CLR_RESET "\n");
+                fflush(stdout);
+            }
 
             send_ticket(msgid, kibic_id, -1);
 
