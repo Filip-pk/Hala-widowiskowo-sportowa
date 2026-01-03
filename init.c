@@ -33,9 +33,14 @@ int main() {
     stan->aktywne_kasy[1] = 1;
 
     stan->next_kibic_id = DYN_ID_START;
+
     stan->standard_sold_out = 0;
     stan->sprzedaz_zakonczona = 0;
 
+    stan->cnt_weszlo = 0;
+    stan->cnt_opiekun = 0;
+    stan->cnt_kolega = 0;
+    stan->cnt_agresja = 0;
     shmdt(stan);
 
     int n_sem = 2 + LICZBA_SEKTOROW;

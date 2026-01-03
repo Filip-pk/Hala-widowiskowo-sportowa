@@ -19,9 +19,6 @@ int main() {
     int msgid = msgget(KEY_MSG, 0600);
     if (msgid == -1) { perror("msgget"); exit(1); }
 
-    (void)semid;
-    (void)msgid;
-
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) { perror("shmat"); exit(1); }
 
@@ -72,7 +69,6 @@ int main() {
         if (stan->sprzedaz_zakonczona) break;
 
         int is_vip = 0;
-
         if (stan->standard_sold_out) {
             if (vip_cnt < max_vip) {
                 is_vip = 1;
@@ -106,6 +102,16 @@ int main() {
     fflush(stdout);
 
     while (wait(NULL) > 0);
+
+    FILE *rf = fopen("raport.txt", "a");
+    if (rf) {
+        fprintf(rf, "\nPODSUMOWANIE\n");
+        fprintf(rf, "weszlo %d\n", stan->cnt_weszlo);
+        fprintf(rf, "opiekun %d\n", stan->cnt_opiekun);
+        fprintf(rf, "kolega %d\n", stan->cnt_kolega);
+        fprintf(rf, "agresja %d\n", stan->cnt_agresja);
+        fclose(rf);
+    }
 
     shmdt(stan);
     system("./clean > /dev/null 2>&1");

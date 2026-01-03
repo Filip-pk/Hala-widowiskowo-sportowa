@@ -47,8 +47,12 @@ typedef struct {
     int next_kibic_id;
 
     int standard_sold_out;
-
     int sprzedaz_zakonczona;
+
+    int cnt_weszlo;
+    int cnt_opiekun;
+    int cnt_kolega;
+    int cnt_agresja;
 } SharedState;
 
 typedef struct {

@@ -1,4 +1,5 @@
 #include "common.h"
+
 #include <sys/wait.h>
 
 static void sem_op(int semid, int idx, int op) {
@@ -120,8 +121,7 @@ int main(int argc, char *argv[]) {
             for (int i = 0; i < LICZBA_KAS; i++) {
                 if (stan->aktywne_kasy[i] == 0) {
                     stan->aktywne_kasy[i] = 1;
-                    printf(CLR_GREEN "[SYSTEM] OTWIERAM KASĘ %d (kolejka=%d, aktywne=%d->%d)"
-                           CLR_RESET "\n",
+                    printf(CLR_GREEN "[SYSTEM] OTWIERAM KASĘ %d (kolejka=%d, aktywne=%d->%d)" CLR_RESET "\n",
                            i, total_queue, N, N + 1);
                     fflush(stdout);
                     break;
@@ -137,7 +137,6 @@ int main(int argc, char *argv[]) {
             if (msgrcv(msgid, &req, sizeof(int), MSGTYPE_VIP_REQ, IPC_NOWAIT) != -1) {
                 klient_typ = 1;
                 kibic_id = req.kibic_id;
-
                 sem_op(semid, SEM_KASY, -1);
                 if (stan->kolejka_vip > 0) stan->kolejka_vip--;
                 sem_op(semid, SEM_KASY, 1);
@@ -148,7 +147,6 @@ int main(int argc, char *argv[]) {
             if (msgrcv(msgid, &req, sizeof(int), MSGTYPE_STD_REQ, IPC_NOWAIT) != -1) {
                 klient_typ = 2;
                 kibic_id = req.kibic_id;
-
                 sem_op(semid, SEM_KASY, -1);
                 if (stan->kolejka_zwykla > 0) stan->kolejka_zwykla--;
                 sem_op(semid, SEM_KASY, 1);
@@ -161,29 +159,30 @@ int main(int argc, char *argv[]) {
         }
 
         if (stan->ewakuacja_trwa) break;
+        if (stan->sprzedaz_zakonczona) break;
 
         usleep(100000);
 
-        int sektor = -1;
-        int friend_id = -1;
-        int ile_sprzedane = 1;
-
         if (klient_typ == 1) {
+            int sektor = -1;
+
             sem_op(semid, SEM_SHM, -1);
             if (stan->sprzedane_bilety[SEKTOR_VIP] < limit_vip) {
                 stan->sprzedane_bilety[SEKTOR_VIP]++;
                 sektor = SEKTOR_VIP;
             }
-            if (sektor == -1 && all_sold_out(stan, limit_sektor, limit_vip)) {
+            if (all_sold_out(stan, limit_sektor, limit_vip)) {
                 stan->sprzedaz_zakonczona = 1;
             }
             sem_op(semid, SEM_SHM, 1);
 
             send_ticket(msgid, kibic_id, sektor);
+
             if (stan->sprzedaz_zakonczona) {
                 sem_op(semid, SEM_KASY, -1);
                 stan->kolejka_vip = 0;
                 stan->kolejka_zwykla = 0;
+                for (int i = 0; i < LICZBA_KAS; i++) stan->aktywne_kasy[i] = 0;
                 sem_op(semid, SEM_KASY, 1);
 
                 cancel_queue_type(msgid, MSGTYPE_VIP_REQ);
@@ -192,6 +191,10 @@ int main(int argc, char *argv[]) {
             }
             continue;
         }
+
+        int sektor = -1;
+        int ile_sprzedane = 1;
+        int friend_id = -1;
 
         int start = rand() % LICZBA_SEKTOROW;
         for (int i = 0; i < LICZBA_SEKTOROW; i++) {
@@ -213,7 +216,6 @@ int main(int argc, char *argv[]) {
                 if (ile == 2) {
                     friend_id = stan->next_kibic_id++;
                 }
-
                 sem_op(semid, SEM_SHM, 1);
 
                 if (ile == 2) {
@@ -223,6 +225,7 @@ int main(int argc, char *argv[]) {
                     printf("[KASA %d] Sprzedano 1 bilet do sektora %d.\n", id, s);
                 }
                 fflush(stdout);
+
                 break;
             }
             sem_op(semid, SEM_SHM, 1);
@@ -256,6 +259,7 @@ int main(int argc, char *argv[]) {
                 sem_op(semid, SEM_KASY, -1);
                 stan->kolejka_vip = 0;
                 stan->kolejka_zwykla = 0;
+                for (int i = 0; i < LICZBA_KAS; i++) stan->aktywne_kasy[i] = 0;
                 sem_op(semid, SEM_KASY, 1);
 
                 cancel_queue_type(msgid, MSGTYPE_VIP_REQ);

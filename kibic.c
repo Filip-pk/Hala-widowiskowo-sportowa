@@ -29,6 +29,20 @@ static void append_report(int kibic_id, int wiek, int sektor) {
     close(fd);
 }
 
+static void bump_entered(SharedState *stan, int semid, int wiek, int is_kolega) {
+    sem_op(semid, SEM_SHM, -1);
+    stan->cnt_weszlo++;
+    if (wiek < 15) stan->cnt_opiekun++;
+    if (is_kolega) stan->cnt_kolega++;
+    sem_op(semid, SEM_SHM, 1);
+}
+
+static void bump_agresja(SharedState *stan, int semid) {
+    sem_op(semid, SEM_SHM, -1);
+    stan->cnt_agresja++;
+    sem_op(semid, SEM_SHM, 1);
+}
+
 int main(int argc, char *argv[]) {
     setbuf(stdout, NULL);
     if (argc != 3 && argc != 4) {
@@ -90,7 +104,7 @@ int main(int argc, char *argv[]) {
         if (r >= 0) break;
 
         if (errno == ENOMSG) {
-            if (!ma_juz_bilet && stan->standard_sold_out && !is_vip) { shmdt(stan); exit(0); }
+            if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { shmdt(stan); exit(0); }
             usleep(50000);
             continue;
         }
@@ -107,7 +121,10 @@ int main(int argc, char *argv[]) {
 
     append_report(my_id, wiek, sektor);
 
+    const int is_kolega = (my_id >= DYN_ID_START);
+
     if (sektor == SEKTOR_VIP) {
+        bump_entered(stan, semid, wiek, is_kolega);
         printf(CLR_YELLOW "[VIP %d] WEJŚCIE VIP" CLR_RESET "\n", my_id);
         fflush(stdout);
         shmdt(stan);
@@ -139,6 +156,8 @@ int main(int argc, char *argv[]) {
         }
 
         if (wybrane != -1) {
+            bump_entered(stan, semid, wiek, is_kolega);
+
             stan->bramki[sektor][wybrane].zajetosc++;
             stan->bramki[sektor][wybrane].druzyna = druzyna;
 
@@ -172,7 +191,8 @@ int main(int argc, char *argv[]) {
 
         cierpliwosc++;
         if (cierpliwosc >= LIMIT_CIERPLIWOSCI) {
-            printf(CLR_RED "[AGRESJA] KIBIC %d (DR %d) W SZALE POD SEKTORM %d !!!" CLR_RESET "\n",
+            bump_agresja(stan, semid);
+            printf(CLR_RED "[AGRESJA] KIBIC %d (DR %d) W SZALE POD SEKTOREM %d !!!" CLR_RESET "\n",
                    my_id, druzyna, sektor);
             fflush(stdout);
             break;
