@@ -6,8 +6,6 @@ static void ewakuacja(int msgid, SharedState *stan) {
     stan->ewakuacja_trwa = 1;
     stan->status_meczu = 2;
 
-    stan->obecni_w_sektorze[SEKTOR_VIP] = 0;
-
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
         MsgSterujacy msg = {10 + i, 3, i};
         if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
@@ -35,6 +33,10 @@ static void ewakuacja(int msgid, SharedState *stan) {
             perror("msgrcv");
             break;
         }
+    }
+
+    while (stan->obecni_w_sektorze[SEKTOR_VIP] > 0) {
+        usleep(100000);
     }
 
     printf("[KIEROWNIK] Koniec symulacji\n");

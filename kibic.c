@@ -14,6 +14,12 @@ static void obecni_inc(SharedState *stan, int semid, int sektor) {
     sem_op(semid, SEM_SHM, 1);
 }
 
+static void obecni_dec(SharedState *stan, int semid, int sektor) {
+    sem_op(semid, SEM_SHM, -1);
+    if (stan->obecni_w_sektorze[sektor] > 0) stan->obecni_w_sektorze[sektor]--;
+    sem_op(semid, SEM_SHM, 1);
+}
+
 static const char* team_color(int druzyna) {
     return (druzyna == 0) ? CLR_DBLUE : CLR_PURPLE;
 }
@@ -80,6 +86,7 @@ int main(int argc, char *argv[]) {
     if (stan->ewakuacja_trwa) { shmdt(stan); exit(0); }
 
     if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { shmdt(stan); exit(0); }
+
     if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { shmdt(stan); exit(0); }
 
     if (!ma_juz_bilet) {
@@ -130,9 +137,11 @@ int main(int argc, char *argv[]) {
 
     if (sektor == SEKTOR_VIP) {
         bump_entered(stan, semid, wiek, is_kolega);
-        obecni_inc(stan, semid, SEKTOR_VIP);
         printf(CLR_YELLOW "[VIP %d] WEJŚCIE VIP" CLR_RESET "\n", my_id);
         fflush(stdout);
+        obecni_inc(stan, semid, SEKTOR_VIP);
+        while (!stan->ewakuacja_trwa) usleep(200000);
+        obecni_dec(stan, semid, SEKTOR_VIP);
         shmdt(stan);
         exit(0);
     }
@@ -191,7 +200,6 @@ int main(int argc, char *argv[]) {
             sem_op(semid, sem_sektora, -1);
             stan->bramki[sektor][wybrane].zajetosc--;
             sem_op(semid, sem_sektora, 1);
-
             if (!stan->ewakuacja_trwa) wszedl_do_sektora = 1;
             break;
         }
@@ -212,6 +220,8 @@ int main(int argc, char *argv[]) {
 
     if (wszedl_do_sektora) {
         obecni_inc(stan, semid, sektor);
+        while (!stan->ewakuacja_trwa) usleep(200000);
+        obecni_dec(stan, semid, sektor);
     }
 
     shmdt(stan);
