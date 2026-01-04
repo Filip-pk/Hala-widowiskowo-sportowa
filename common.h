@@ -39,6 +39,9 @@ typedef struct {
     int aktywne_kasy[LICZBA_KAS];
     int sprzedane_bilety[LICZBA_SEKTOROW + 1];
     Stanowisko bramki[LICZBA_SEKTOROW][2];
+
+    int obecni_w_sektorze[LICZBA_SEKTOROW + 1];
+
     int blokada_sektora[LICZBA_SEKTOROW];
     int ewakuacja_trwa;
     int status_meczu;

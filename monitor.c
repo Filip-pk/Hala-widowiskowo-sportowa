@@ -58,6 +58,13 @@ int main() {
         if (limit_vip < 1) limit_vip = 1;
         printf("VIP: %3d / %d\n", stan->sprzedane_bilety[SEKTOR_VIP], limit_vip);
 
+        printf("\n--- OBECNI NA HALI (WEDŁUG SEKTORÓW) ---\n");
+        for (int i = 0; i < LICZBA_SEKTOROW; i++) {
+            printf("S%d: %3d | ", i, stan->obecni_w_sektorze[i]);
+            if ((i + 1) % 4 == 0) printf("\n");
+        }
+        printf("VIP: %3d\n", stan->obecni_w_sektorze[SEKTOR_VIP]);
+
         printf("\n--- KONTROLA BEZPIECZEŃSTWA ---\n");
         for (int i = 0; i < LICZBA_SEKTOROW; i++) {
             int n0 = stan->bramki[i][0].zajetosc;
