@@ -15,6 +15,17 @@
 #include <time.h>
 #include <signal.h>
 
+static inline void warn_errno(const char *ctx) {
+    int e = errno;
+    perror(ctx);
+    fprintf(stderr, "errno=%d (%s)\n", e, strerror(e));
+}
+
+static inline void die_errno(const char *ctx) {
+    warn_errno(ctx);
+    exit(EXIT_FAILURE);
+}
+
 #define K 2000
 #define LICZBA_SEKTOROW 8
 #define SEKTOR_VIP 8

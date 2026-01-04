@@ -3,8 +3,12 @@
 #include <sys/wait.h>
 
 static void sem_op(int semid, int idx, int op) {
-    struct sembuf sb = {idx, op, 0};
-    if (semop(semid, &sb, 1) == -1) exit(0);
+    struct sembuf sb = {(unsigned short)idx, (short)op, 0};
+    while (semop(semid, &sb, 1) == -1) {
+        if (errno == EINTR) continue;
+        if (errno == EIDRM || errno == EINVAL) _exit(0);
+        die_errno("semop");
+    }
 }
 
 static void send_ticket(int msgid, int kibic_id, int sektor) {
@@ -12,8 +16,11 @@ static void send_ticket(int msgid, int kibic_id, int sektor) {
     msg.mtype = MSGTYPE_TICKET_BASE + kibic_id;
     msg.sektor_id = sektor;
 
-    if (msgsnd(msgid, &msg, sizeof(int), 0) == -1) {
-        if (!(errno == EIDRM || errno == EINVAL)) perror("msgsnd");
+    while (msgsnd(msgid, &msg, sizeof(int), 0) == -1) {
+        if (errno == EINTR) continue;
+        if (errno == EIDRM || errno == EINVAL) return;
+        warn_errno("msgsnd(send_ticket)");
+        return;
     }
 }
 
@@ -32,11 +39,15 @@ static int all_sold_out(SharedState *stan, int limit_sektor, int limit_vip) {
 
 static void spawn_friend_kibic(int friend_id) {
     pid_t pid = fork();
+    if (pid == -1) {
+        warn_errno("fork(spawn_friend_kibic)");
+        return;
+    }
     if (pid == 0) {
         char idbuf[32];
         sprintf(idbuf, "%d", friend_id);
         execl("./kibic", "kibic", idbuf, "0", "1", NULL);
-        _exit(1);
+        die_errno("execl(spawn_friend_kibic)");
     }
 }
 
@@ -50,6 +61,8 @@ static void cancel_queue_type(int msgid, long req_type) {
         }
         if (errno == ENOMSG) break;
         if (errno == EINTR) continue;
+        if (errno == EIDRM || errno == EINVAL) break;
+        warn_errno("msgrcv(cancel_queue_type)");
         break;
     }
 }
@@ -62,21 +75,25 @@ int main(int argc, char *argv[]) {
     }
 
     int id = atoi(argv[1]);
+    if (id < 0 || id >= LICZBA_KAS) {
+        fprintf(stderr, "Błąd: id kasy poza zakresem 0..%d\n", LICZBA_KAS - 1);
+        exit(EXIT_FAILURE);
+    }
     srand(time(NULL) + id);
 
-    signal(SIGCHLD, SIG_IGN);
+    if (signal(SIGCHLD, SIG_IGN) == SIG_ERR) warn_errno("signal(SIGCHLD)");
 
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
-    if (shmid == -1) exit(1);
+    if (shmid == -1) die_errno("shmget");
 
     int semid = semget(KEY_SEM, 0, 0600);
-    if (semid == -1) exit(1);
+    if (semid == -1) die_errno("semget");
 
     int msgid = msgget(KEY_MSG, 0600);
-    if (msgid == -1) exit(1);
+    if (msgid == -1) die_errno("msgget");
 
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
-    if (stan == (void*)-1) exit(1);
+    if (stan == (void*)-1) die_errno("shmat");
 
     int limit_sektor = K / 8;
     int limit_vip = (int)(K * 0.003);
@@ -134,22 +151,30 @@ int main(int argc, char *argv[]) {
         MsgKolejka req;
 
         if (q_vip > 0) {
-            if (msgrcv(msgid, &req, sizeof(int), MSGTYPE_VIP_REQ, IPC_NOWAIT) != -1) {
+            ssize_t r = msgrcv(msgid, &req, sizeof(int), MSGTYPE_VIP_REQ, IPC_NOWAIT);
+            if (r != -1) {
                 klient_typ = 1;
                 kibic_id = req.kibic_id;
                 sem_op(semid, SEM_KASY, -1);
                 if (stan->kolejka_vip > 0) stan->kolejka_vip--;
                 sem_op(semid, SEM_KASY, 1);
+            } else {
+                if (errno != ENOMSG && errno != EINTR && errno != EIDRM && errno != EINVAL)
+                    warn_errno("msgrcv(VIP_REQ)");
             }
         }
 
         if (!klient_typ && !stan->standard_sold_out && q_std > 0) {
-            if (msgrcv(msgid, &req, sizeof(int), MSGTYPE_STD_REQ, IPC_NOWAIT) != -1) {
+            ssize_t r = msgrcv(msgid, &req, sizeof(int), MSGTYPE_STD_REQ, IPC_NOWAIT);
+            if (r != -1) {
                 klient_typ = 2;
                 kibic_id = req.kibic_id;
                 sem_op(semid, SEM_KASY, -1);
                 if (stan->kolejka_zwykla > 0) stan->kolejka_zwykla--;
                 sem_op(semid, SEM_KASY, 1);
+            } else {
+                if (errno != ENOMSG && errno != EINTR && errno != EIDRM && errno != EINVAL)
+                    warn_errno("msgrcv(STD_REQ)");
             }
         }
 
@@ -316,6 +341,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    shmdt(stan);
+    if (shmdt(stan) == -1) warn_errno("shmdt");
     return 0;
 }

@@ -1,8 +1,12 @@
 #include "common.h"
 
 static void sem_op(int semid, int idx, int op) {
-    struct sembuf sb = {idx, op, 0};
-    if (semop(semid, &sb, 1) == -1) exit(0);
+    struct sembuf sb = {(unsigned short)idx, (short)op, 0};
+    while (semop(semid, &sb, 1) == -1) {
+        if (errno == EINTR) continue;
+        if (errno == EIDRM || errno == EINVAL) _exit(0);
+        die_errno("semop");
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -12,18 +16,22 @@ int main(int argc, char *argv[]) {
     }
 
     int sektor = atoi(argv[1]);
+    if (sektor < 0 || sektor >= LICZBA_SEKTOROW) {
+        fprintf(stderr, "Błąd: sektor poza zakresem 0..%d\n", LICZBA_SEKTOROW - 1);
+        exit(EXIT_FAILURE);
+    }
 
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
-    if (shmid == -1) exit(1);
+    if (shmid == -1) die_errno("shmget");
 
     int msgid = msgget(KEY_MSG, 0600);
-    if (msgid == -1) exit(1);
+    if (msgid == -1) die_errno("msgget");
 
     int semid = semget(KEY_SEM, 0, 0600);
-    if (semid == -1) exit(1);
+    if (semid == -1) die_errno("semget");
 
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
-    if (stan == (void*)-1) exit(1);
+    if (stan == (void*)-1) die_errno("shmat");
 
     long my_type = 10 + sektor;
 
@@ -32,7 +40,7 @@ int main(int argc, char *argv[]) {
         if (msgrcv(msgid, &msg, sizeof(int) * 2, my_type, 0) == -1) {
             if (errno == EINTR) continue;
             if (errno == EIDRM || errno == EINVAL) break;
-            perror("msgrcv");
+            warn_errno("msgrcv");
             break;
         }
 
@@ -70,7 +78,9 @@ int main(int argc, char *argv[]) {
 
             msg.mtype = 99;
             msg.sektor_id = sektor;
-            if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) perror("msgsnd");
+            if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
+                if (!(errno == EIDRM || errno == EINVAL)) warn_errno("msgsnd(raport)");
+            }
 
             printf("[TECH %d] Raport wysłany\n", sektor);
             fflush(stdout);
@@ -78,6 +88,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    shmdt(stan);
+    if (shmdt(stan) == -1) warn_errno("shmdt");
     return 0;
 }

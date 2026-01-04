@@ -8,19 +8,19 @@ int main() {
 
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
     if (shmid == -1) {
-        perror("shmget");
+        warn_errno("shmget");
         fprintf(stderr, "Uruchom najpierw ./setup\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     int semid = semget(KEY_SEM, 0, 0600);
-    if (semid == -1) { perror("semget"); exit(1); }
+    if (semid == -1) die_errno("semget");
 
     int msgid = msgget(KEY_MSG, 0600);
-    if (msgid == -1) { perror("msgget"); exit(1); }
+    if (msgid == -1) die_errno("msgget");
 
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
-    if (stan == (void*)-1) { perror("shmat"); exit(1); }
+    if (stan == (void*)-1) die_errno("shmat");
 
     int max_vip = (int)(K * 0.003);
     if (max_vip < 1) max_vip = 1;
@@ -28,41 +28,59 @@ int main() {
     printf("--- START SYMULACJI ---\n");
     fflush(stdout);
 
-    if (!fork()) {
+    pid_t pid = fork();
+    if (pid == -1) die_errno("fork(kierownik)");
+    if (pid == 0) {
         execl("./kierownik", "kierownik", NULL);
-        perror("execl");
-        exit(1);
+        die_errno("execl(kierownik)");
     }
 
-    for (int i = 0; i < LICZBA_SEKTOROW; i++)
-        if (!fork()) {
+    for (int i = 0; i < LICZBA_SEKTOROW; i++) {
+        pid_t p = fork();
+        if (p == -1) die_errno("fork(pracownik)");
+        if (p == 0) {
             char b[10];
             sprintf(b, "%d", i);
             execl("./pracownik", "pracownik", b, NULL);
-            perror("execl");
-            exit(1);
+            die_errno("execl(pracownik)");
         }
+    }
 
-    for (int i = 0; i < LICZBA_KAS; i++)
-        if (!fork()) {
+    for (int i = 0; i < LICZBA_KAS; i++) {
+        pid_t p = fork();
+        if (p == -1) die_errno("fork(kasjer)");
+        if (p == 0) {
             char b[10];
             sprintf(b, "%d", i);
             execl("./kasjer", "kasjer", b, NULL);
-            perror("execl");
-            exit(1);
+            die_errno("execl(kasjer)");
         }
+    }
 
     int total_kibicow = (int)(K * 1.5);
     int active = 0, vip_cnt = 0;
 
-    srand(time(NULL));
+    if (time(NULL) == (time_t)-1) warn_errno("time");
+    srand((unsigned)time(NULL));
     sleep(1);
 
     for (int i = 0; i < total_kibicow; i++) {
-        while (waitpid(-1, NULL, WNOHANG) > 0) active--;
+        while (1) {
+            pid_t w = waitpid(-1, NULL, WNOHANG);
+            if (w > 0) { active--; continue; }
+            if (w == 0) break;
+            if (errno == EINTR) continue;
+            if (errno != ECHILD) warn_errno("waitpid(WNOHANG)");
+            break;
+        }
         if (active >= MAX_PROC) {
-            wait(NULL);
-            active--;
+            while (1) {
+                pid_t w = wait(NULL);
+                if (w > 0) { active--; break; }
+                if (errno == EINTR) continue;
+                if (errno != ECHILD) warn_errno("wait");
+                break;
+            }
         }
 
         if (stan->ewakuacja_trwa) break;
@@ -85,13 +103,14 @@ int main() {
             }
         }
 
-        if (!fork()) {
+        pid_t pk = fork();
+        if (pk == -1) die_errno("fork(kibic)");
+        if (pk == 0) {
             char id[20], v[8];
             sprintf(id, "%d", i);
             sprintf(v, "%d", is_vip);
             execl("./kibic", "kibic", id, v, NULL);
-            perror("execl");
-            exit(1);
+            die_errno("execl(kibic)");
         }
 
         active++;
@@ -101,7 +120,13 @@ int main() {
     printf("[MAIN] Koniec generowania kibiców. Czekam na procesy...\n");
     fflush(stdout);
 
-    while (wait(NULL) > 0);
+    while (1) {
+        pid_t w = wait(NULL);
+        if (w > 0) continue;
+        if (errno == EINTR) continue;
+        if (errno != ECHILD) warn_errno("wait");
+        break;
+    }
 
     FILE *rf = fopen("raport.txt", "a");
     if (rf) {
@@ -110,10 +135,12 @@ int main() {
         fprintf(rf, "opiekun %d\n", stan->cnt_opiekun);
         fprintf(rf, "kolega %d\n", stan->cnt_kolega);
         fprintf(rf, "agresja %d\n", stan->cnt_agresja);
-        fclose(rf);
+        if (fclose(rf) == EOF) warn_errno("fclose(raport.txt)");
+    } else {
+        warn_errno("fopen(raport.txt)");
     }
 
-    shmdt(stan);
-    system("./clean > /dev/null 2>&1");
+    if (shmdt(stan) == -1) warn_errno("shmdt");
+    if (system("./clean > /dev/null 2>&1") == -1) warn_errno("system(./clean)");
     return 0;
 }

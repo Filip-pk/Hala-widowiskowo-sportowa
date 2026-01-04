@@ -9,10 +9,8 @@ static void ewakuacja(int msgid, SharedState *stan) {
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
         MsgSterujacy msg = {10 + i, 3, i};
         if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
-            if (errno == EIDRM || errno == EINVAL) {
-                return;
-            }
-            perror("msgsnd");
+            if (errno == EIDRM || errno == EINVAL) return;
+            warn_errno("msgsnd(ewakuacja)");
         }
     }
 
@@ -30,7 +28,7 @@ static void ewakuacja(int msgid, SharedState *stan) {
         } else {
             if (errno == EIDRM || errno == EINVAL) break;
             if (errno == EINTR) continue;
-            perror("msgrcv");
+            warn_errno("msgrcv(raport)");
             break;
         }
     }
@@ -47,22 +45,26 @@ int main() {
     setbuf(stdout, NULL);
 
     int msgid = msgget(KEY_MSG, 0600);
-    if (msgid == -1) { perror("msgget"); exit(1); }
+    if (msgid == -1) die_errno("msgget");
 
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
-    if (shmid == -1) { perror("shmget"); exit(1); }
+    if (shmid == -1) die_errno("shmget");
 
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
-    if (stan == (void*)-1) { perror("shmat"); exit(1); }
+    if (stan == (void*)-1) die_errno("shmat");
 
     stan->status_meczu = 0;
     stan->czas_pozostaly = CZAS_PRZED_MECZEM;
 
     pid_t zegar_pid = fork();
+    if (zegar_pid == -1) die_errno("fork(zegar)");
     if (zegar_pid == 0) {
         time_t start = time(NULL);
+        if (start == (time_t)-1) die_errno("time");
         while (1) {
-            int left = CZAS_PRZED_MECZEM - (int)(time(NULL) - start);
+            time_t now = time(NULL);
+            if (now == (time_t)-1) die_errno("time");
+            int left = CZAS_PRZED_MECZEM - (int)(now - start);
             if (left <= 0) break;
             stan->czas_pozostaly = left;
             sleep(1);
@@ -72,8 +74,11 @@ int main() {
         stan->czas_pozostaly = CZAS_MECZU;
 
         start = time(NULL);
+        if (start == (time_t)-1) die_errno("time");
         while (1) {
-            int left = CZAS_MECZU - (int)(time(NULL) - start);
+            time_t now = time(NULL);
+            if (now == (time_t)-1) die_errno("time");
+            int left = CZAS_MECZU - (int)(now - start);
             if (left <= 0) break;
             stan->czas_pozostaly = left;
             sleep(1);
@@ -91,8 +96,12 @@ int main() {
     struct timeval tv;
 
     while (1) {
-        if (waitpid(zegar_pid, NULL, WNOHANG) > 0) {
-            ewakuacja(msgid, stan);
+        while (1) {
+            pid_t w = waitpid(zegar_pid, NULL, WNOHANG);
+            if (w > 0) { ewakuacja(msgid, stan); goto out; }
+            if (w == 0) break;
+            if (errno == EINTR) continue;
+            warn_errno("waitpid(WNOHANG)");
             break;
         }
 
@@ -102,12 +111,17 @@ int main() {
         tv.tv_usec = 500000;
 
         int ret = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv);
+        if (ret == -1) {
+            if (errno == EINTR) continue;
+            warn_errno("select");
+            continue;
+        }
         if (ret > 0) {
             int cmd;
             if (scanf("%d", &cmd) == 1) {
                 if (cmd == 3) {
-                    kill(zegar_pid, SIGTERM);
-                    waitpid(zegar_pid, NULL, 0);
+                    if (kill(zegar_pid, SIGTERM) == -1 && errno != ESRCH) warn_errno("kill(zegar)");
+                    while (waitpid(zegar_pid, NULL, 0) == -1 && errno == EINTR) {}
                     ewakuacja(msgid, stan);
                     break;
                 }
@@ -118,7 +132,7 @@ int main() {
                     if (scanf("%d", &s) == 1 && s >= 0 && s < LICZBA_SEKTOROW) {
                         MsgSterujacy msg = {10 + s, cmd, s};
                         if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
-                            if (!(errno == EIDRM || errno == EINVAL)) perror("msgsnd");
+                            if (!(errno == EIDRM || errno == EINVAL)) warn_errno("msgsnd(sterowanie)");
                         }
                     }
                 }
@@ -126,8 +140,10 @@ int main() {
         }
     }
 
-    shmdt(stan);
-    kill(zegar_pid, SIGTERM);
-    waitpid(zegar_pid, NULL, 0);
+out:
+
+    if (shmdt(stan) == -1) warn_errno("shmdt");
+    if (kill(zegar_pid, SIGTERM) == -1 && errno != ESRCH) warn_errno("kill(zegar)");
+    while (waitpid(zegar_pid, NULL, 0) == -1 && errno == EINTR) {}
     return 0;
 }

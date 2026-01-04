@@ -16,16 +16,13 @@ int main() {
     }
 
     int shmid = shmget(KEY_SHM, sizeof(SharedState), IPC_CREAT | 0600);
-    if (shmid == -1) {
-        perror("shmget");
-        exit(1);
-    }
+    if (shmid == -1) die_errno("shmget");
 
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) {
-        perror("shmat");
-        shmctl(shmid, IPC_RMID, NULL);
-        exit(1);
+        warn_errno("shmat");
+        if (shmctl(shmid, IPC_RMID, NULL) == -1) warn_errno("shmctl(IPC_RMID)");
+        exit(EXIT_FAILURE);
     }
 
     memset(stan, 0, sizeof(SharedState));
@@ -41,33 +38,33 @@ int main() {
     stan->cnt_opiekun = 0;
     stan->cnt_kolega = 0;
     stan->cnt_agresja = 0;
-    shmdt(stan);
+    if (shmdt(stan) == -1) warn_errno("shmdt");
 
     int n_sem = 2 + LICZBA_SEKTOROW;
     int semid = semget(KEY_SEM, n_sem, IPC_CREAT | 0600);
     if (semid == -1) {
-        perror("semget");
-        shmctl(shmid, IPC_RMID, NULL);
-        exit(1);
+        warn_errno("semget");
+        if (shmctl(shmid, IPC_RMID, NULL) == -1) warn_errno("shmctl(IPC_RMID)");
+        exit(EXIT_FAILURE);
     }
 
     union semun arg;
     arg.val = 1;
     for (int i = 0; i < n_sem; i++) {
         if (semctl(semid, i, SETVAL, arg) == -1) {
-            perror("semctl");
-            shmctl(shmid, IPC_RMID, NULL);
-            semctl(semid, 0, IPC_RMID);
-            exit(1);
+            warn_errno("semctl(SETVAL)");
+            if (shmctl(shmid, IPC_RMID, NULL) == -1) warn_errno("shmctl(IPC_RMID)");
+            if (semctl(semid, 0, IPC_RMID) == -1) warn_errno("semctl(IPC_RMID)");
+            exit(EXIT_FAILURE);
         }
     }
 
     int msgid = msgget(KEY_MSG, IPC_CREAT | 0600);
     if (msgid == -1) {
-        perror("msgget");
-        shmctl(shmid, IPC_RMID, NULL);
-        semctl(semid, 0, IPC_RMID);
-        exit(1);
+        warn_errno("msgget");
+        if (shmctl(shmid, IPC_RMID, NULL) == -1) warn_errno("shmctl(IPC_RMID)");
+        if (semctl(semid, 0, IPC_RMID) == -1) warn_errno("semctl(IPC_RMID)");
+        exit(EXIT_FAILURE);
     }
 
     printf("[OK] Zasoby utworzone.\n");

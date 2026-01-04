@@ -9,15 +9,14 @@ void print_timer(int sekundy) {
 int main() {
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
     if (shmid == -1) {
-        perror("shmget");
+        warn_errno("shmget");
         fprintf(stderr, "Uruchom najpierw ./setup\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) {
-        perror("shmat");
-        exit(1);
+        die_errno("shmat");
     }
 
     while (1) {
@@ -85,6 +84,6 @@ int main() {
         usleep(500000);
     }
 
-    shmdt(stan);
+    if (shmdt(stan) == -1) warn_errno("shmdt");
     return 0;
 }

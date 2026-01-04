@@ -4,8 +4,12 @@
 #include <sys/file.h>
 
 static void sem_op(int semid, int idx, int op) {
-    struct sembuf sb = {idx, op, 0};
-    if (semop(semid, &sb, 1) == -1) exit(0);
+    struct sembuf sb = {(unsigned short)idx, (short)op, 0};
+    while (semop(semid, &sb, 1) == -1) {
+        if (errno == EINTR) continue;
+        if (errno == EIDRM || errno == EINVAL) _exit(0);
+        die_errno("semop");
+    }
 }
 
 static void obecni_inc(SharedState *stan, int semid, int sektor) {
@@ -32,13 +36,20 @@ static void append_report(int kibic_id, int wiek, int sektor) {
     const char *typ = (sektor == SEKTOR_VIP) ? "vip" : ((wiek < 15) ? "opiekun" : "zwykly");
 
     int fd = open("raport.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (fd == -1) return;
+    if (fd == -1) { warn_errno("open(raport.txt)"); return; }
 
-    if (flock(fd, LOCK_EX) == 0) {
-        dprintf(fd, "%d %s %d\n", kibic_id, typ, sektor);
-        flock(fd, LOCK_UN);
+    if (flock(fd, LOCK_EX) == -1) {
+        warn_errno("flock(LOCK_EX)");
+        if (close(fd) == -1) warn_errno("close(raport.txt)");
+        return;
     }
-    close(fd);
+
+    if (dprintf(fd, "%d %s %d\n", kibic_id, typ, sektor) < 0) {
+        warn_errno("dprintf(raport.txt)");
+    }
+
+    if (flock(fd, LOCK_UN) == -1) warn_errno("flock(LOCK_UN)");
+    if (close(fd) == -1) warn_errno("close(raport.txt)");
 }
 
 static void bump_entered(SharedState *stan, int semid, int wiek, int is_kolega) {
@@ -71,23 +82,32 @@ int main(int argc, char *argv[]) {
     int druzyna = rand() % 2;
 
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
-    if (shmid == -1) exit(0);
+    if (shmid == -1) {
+        warn_errno("shmget");
+        exit(EXIT_FAILURE);
+    }
 
     int semid = semget(KEY_SEM, 0, 0600);
-    if (semid == -1) exit(0);
+    if (semid == -1) {
+        warn_errno("semget");
+        exit(EXIT_FAILURE);
+    }
 
     int msgid = msgget(KEY_MSG, 0600);
-    if (msgid == -1) exit(0);
+    if (msgid == -1) {
+        warn_errno("msgget");
+        exit(EXIT_FAILURE);
+    }
 
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
-    if (stan == (void*)-1) exit(0);
+    if (stan == (void*)-1) die_errno("shmat");
 
     if (wiek < 15 && !is_vip) usleep(1000);
-    if (stan->ewakuacja_trwa) { shmdt(stan); exit(0); }
+    if (stan->ewakuacja_trwa) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
-    if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { shmdt(stan); exit(0); }
+    if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
-    if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { shmdt(stan); exit(0); }
+    if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
     if (!ma_juz_bilet) {
         sem_op(semid, SEM_KASY, -1);
@@ -99,35 +119,41 @@ int main(int argc, char *argv[]) {
         req.mtype = is_vip ? MSGTYPE_VIP_REQ : MSGTYPE_STD_REQ;
         req.kibic_id = my_id;
 
-        if (msgsnd(msgid, &req, sizeof(int), 0) == -1) {
-            if (!(errno == EIDRM || errno == EINVAL)) perror("msgsnd");
-            shmdt(stan);
-            exit(0);
+        while (msgsnd(msgid, &req, sizeof(int), 0) == -1) {
+            if (errno == EINTR) continue;
+            if (errno == EIDRM || errno == EINVAL) {
+                if (shmdt(stan) == -1) warn_errno("shmdt");
+                exit(0);
+            }
+            warn_errno("msgsnd(kolejka)");
+            if (shmdt(stan) == -1) warn_errno("shmdt");
+            exit(EXIT_FAILURE);
         }
     }
 
     MsgBilet bilet;
     while (1) {
-        if (stan->ewakuacja_trwa) { shmdt(stan); exit(0); }
-        if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { shmdt(stan); exit(0); }
+        if (stan->ewakuacja_trwa) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
+        if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
         long my_ticket_type = MSGTYPE_TICKET_BASE + my_id;
         ssize_t r = msgrcv(msgid, &bilet, sizeof(int), my_ticket_type, IPC_NOWAIT);
         if (r >= 0) break;
 
         if (errno == ENOMSG) {
-            if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { shmdt(stan); exit(0); }
+            if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
             usleep(50000);
             continue;
         }
         if (errno == EINTR) continue;
-        if (errno == EIDRM || errno == EINVAL) { shmdt(stan); exit(0); }
+        if (errno == EIDRM || errno == EINVAL) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
-        shmdt(stan);
-        exit(0);
+        warn_errno("msgrcv(ticket)");
+        if (shmdt(stan) == -1) warn_errno("shmdt");
+        exit(EXIT_FAILURE);
     }
 
-    if (bilet.sektor_id == -1) { shmdt(stan); exit(0); }
+    if (bilet.sektor_id == -1) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
     int sektor = bilet.sektor_id;
 
@@ -142,7 +168,7 @@ int main(int argc, char *argv[]) {
         obecni_inc(stan, semid, SEKTOR_VIP);
         while (!stan->ewakuacja_trwa) usleep(200000);
         obecni_dec(stan, semid, SEKTOR_VIP);
-        shmdt(stan);
+        if (shmdt(stan) == -1) warn_errno("shmdt");
         exit(0);
     }
 
@@ -224,6 +250,6 @@ int main(int argc, char *argv[]) {
         obecni_dec(stan, semid, sektor);
     }
 
-    shmdt(stan);
+    if (shmdt(stan) == -1) warn_errno("shmdt");
     return 0;
 }
