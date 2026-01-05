@@ -10,8 +10,10 @@ static void sem_op(int semid, int idx, int op) {
 }
 
 int main(int argc, char *argv[]) {
+    /* Pracownik odpowiada za JEDEN sektor i reaguje na komendy kierownika*/
     if (argc != 2) {
         fprintf(stderr, "Użycie: %s <sektor_id>\n", argv[0]);
+        /* exit(): kończy proces kodem błędu*/
         exit(1);
     }
 
@@ -21,15 +23,19 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    /* shmget(): pobiera segment pamięci współdzielonej*/
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
     if (shmid == -1) die_errno("shmget");
 
+    /* msgget(): pobiera kolejkę komunikatów*/
     int msgid = msgget(KEY_MSG, 0600);
     if (msgid == -1) die_errno("msgget");
 
+    /* semget(): pobiera zestaw semaforów*/
     int semid = semget(KEY_SEM, 0, 0600);
     if (semid == -1) die_errno("semget");
 
+    /* shmat(): mapuje shm do pamięci procesu*/
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) die_errno("shmat");
 
@@ -37,25 +43,36 @@ int main(int argc, char *argv[]) {
 
     while (1) {
         MsgSterujacy msg;
+
+        /* msgrcv(): odbiera polecenie z kolejki */
         if (msgrcv(msgid, &msg, sizeof(int) * 2, my_type, 0) == -1) {
             if (errno == EINTR) continue;
-            if (errno == EIDRM || errno == EINVAL) break;
+            if (errno == EIDRM || errno == EINVAL) break; /* kolejka skasowana -> kończymy */
             warn_errno("msgrcv");
             break;
         }
 
+        /*
+         * typ_sygnalu:
+         *  1 -> blokuj sektor
+         *  2 -> odblokuj sektor
+         *  3 -> ewakuacja
+         */
         if (msg.typ_sygnalu == 1) {
             stan->blokada_sektora[sektor] = 1;
-            printf("[TECH %d] Sygnał 1\n", sektor);
-            fflush(stdout);
-        } else if (msg.typ_sygnalu == 2) {
-            stan->blokada_sektora[sektor] = 0;
-            printf("[TECH %d] Sygnał 2\n", sektor);
-            fflush(stdout);
-        } else if (msg.typ_sygnalu == 3) {
-            printf("[TECH %d] Sygnał 3\n", sektor);
+            printf("[TECH %d] Sygnał 1 (BLOKADA)\n", sektor);
             fflush(stdout);
 
+        } else if (msg.typ_sygnalu == 2) {
+            stan->blokada_sektora[sektor] = 0;
+            printf("[TECH %d] Sygnał 2 (ODBLOKOWANIE)\n", sektor);
+            fflush(stdout);
+
+        } else if (msg.typ_sygnalu == 3) {
+            printf("[TECH %d] Sygnał 3 (EWAKUACJA)\n", sektor);
+            fflush(stdout);
+
+            /* W ewakuacji blokujemy sektor i czekamy aż wszyscy znikną*/
             stan->blokada_sektora[sektor] = 1;
 
             int sem_sektora = SEM_SEKTOR_START + sektor;
@@ -63,21 +80,27 @@ int main(int argc, char *argv[]) {
             while (1) {
                 int b0, b1, ob;
 
+                /* Bramki sektora chronione semaforem sektora*/
                 sem_op(semid, sem_sektora, -1);
                 b0 = stan->bramki[sektor][0].zajetosc;
                 b1 = stan->bramki[sektor][1].zajetosc;
                 sem_op(semid, sem_sektora, 1);
 
+                /* Licznik obecnych w sektorze*/
                 sem_op(semid, SEM_SHM, -1);
                 ob = stan->obecni_w_sektorze[sektor];
                 sem_op(semid, SEM_SHM, 1);
 
+                /* Dopiero gdy bramki puste i nikt nie siedzi w sektorze -> sektor ewakuowany*/
                 if (b0 == 0 && b1 == 0 && ob == 0) break;
                 usleep(100000);
             }
 
+            /* Raport do kierownika: sektor pusty*/
             msg.mtype = 99;
             msg.sektor_id = sektor;
+
+            /* msgsnd(): wysyła raport do kolejki komunikatów*/
             if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
                 if (!(errno == EIDRM || errno == EINVAL)) warn_errno("msgsnd(raport)");
             }
@@ -88,6 +111,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /* shmdt(): odłącza shm od procesu pracownika*/
     if (shmdt(stan) == -1) warn_errno("shmdt");
     return 0;
 }
