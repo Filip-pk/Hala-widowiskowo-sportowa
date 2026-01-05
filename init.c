@@ -46,7 +46,7 @@ int main() {
     if (shmdt(stan) == -1) warn_errno("shmdt");
 
     /* semget(): tworzy/pobiera zestaw semaforów*/
-    int n_sem = 2 + LICZBA_SEKTOROW;
+    int n_sem = 3 + LICZBA_SEKTOROW;
     int semid = semget(KEY_SEM, n_sem, IPC_CREAT | 0600);
     if (semid == -1) {
         warn_errno("semget");

@@ -1,18 +1,77 @@
 #include "common.h"
 #include <sys/wait.h>
+#include <sys/select.h>
 #include <time.h>
+#include <ctype.h>
+#include <limits.h>
 
 /*
  * Proces „kierownika” steruje symulacją:
  *  - uruchamia zegar meczu,
  *  - przyjmuje komendy stop/start sektora, ewakuacja,
  *  - uruchamia ewakuację, wysyła polecenia do pracowników i zbiera raporty
- */
+*/
+
+#define MSGTYPE_KIEROWNIK_CTRL 5000
+
+static int read_int_line(const char *prompt, int *out) {
+    if (prompt) {
+        fputs(prompt, stdout);
+        fflush(stdout);
+    }
+
+    char buf[128];
+    if (!fgets(buf, sizeof(buf), stdin)) {
+        return -1;
+    }
+
+    char *p = buf;
+    while (*p && isspace((unsigned char)*p)) p++;
+
+    errno = 0;
+    char *end = NULL;
+    long v = strtol(p, &end, 10);
+    if (p == end) return 0;
+
+    while (*end && isspace((unsigned char)*end)) end++;
+    if (*end != '\0') return 0;
+
+    if (errno == ERANGE || v < INT_MIN || v > INT_MAX) return 0;
+    *out = (int)v;
+    return 1;
+}
+
+static int try_become_master(int semid) {
+    struct sembuf op;
+    op.sem_num = SEM_KIEROWNIK;
+    op.sem_op = -1;
+    op.sem_flg = IPC_NOWAIT | SEM_UNDO;
+
+    if (semop(semid, &op, 1) == 0) return 1;
+    if (errno == EAGAIN) return 0;
+    die_errno("semop(SEM_KIEROWNIK)");
+    return 0;
+}
+
+static void send_to_master(int msgid, int cmd, int sektor) {
+    MsgSterujacy c = {MSGTYPE_KIEROWNIK_CTRL, cmd, sektor};
+
+    /* msgsnd(): wysyła komunikat do kolejki*/
+    if (msgsnd(msgid, &c, sizeof(int) * 2, 0) == -1) {
+        if (errno == EIDRM || errno == EINVAL) {
+            printf("[KONTROLER] Brak działającej symulacji (kolejka skasowana).\n");
+            fflush(stdout);
+            return;
+        }
+        warn_errno("msgsnd(ctrl->master)");
+    }
+}
 
 static void ewakuacja(int msgid, SharedState *stan) {
     /* Start ewakuacji + mecz zakończony*/
     stan->ewakuacja_trwa = 1;
     stan->status_meczu = 2;
+    stan->czas_pozostaly = 0;
 
     /* Wysyłamy do każdego pracownika sektora sygnał 3 = ewakuacja*/
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
@@ -56,12 +115,97 @@ static void ewakuacja(int msgid, SharedState *stan) {
     fflush(stdout);
 }
 
+static pid_t start_clock_process(SharedState *stan) {
+    /* fork(): tworzy proces potomny, tu: zegar*/
+    pid_t zegar_pid = fork();
+    if (zegar_pid == -1) die_errno("fork(zegar)");
+    if (zegar_pid != 0) return zegar_pid;
+
+    /* Dziecko: aktualizuje stan czasu w shm*/
+    time_t start = time(NULL);
+    if (start == (time_t)-1) die_errno("time");
+
+    while (1) {
+        time_t now = time(NULL);
+        if (now == (time_t)-1) die_errno("time");
+        int left = CZAS_PRZED_MECZEM - (int)(now - start);
+        if (left <= 0) break;
+        stan->czas_pozostaly = left;
+        sleep(1);
+    }
+
+    /* Start meczu*/
+    stan->status_meczu = 1;
+    stan->czas_pozostaly = CZAS_MECZU;
+
+    start = time(NULL);
+    if (start == (time_t)-1) die_errno("time");
+
+    while (1) {
+        time_t now = time(NULL);
+        if (now == (time_t)-1) die_errno("time");
+        int left = CZAS_MECZU - (int)(now - start);
+        if (left <= 0) break;
+        stan->czas_pozostaly = left;
+        sleep(1);
+    }
+
+    /* Koniec meczu zegar kończy działanie*/
+    stan->status_meczu = 2;
+    stan->czas_pozostaly = 0;
+
+    /* exit(): kończy proces potomny*/
+    exit(0);
+}
+
+static int handle_cmd_master(int msgid, SharedState *stan, pid_t *zegar_pid, int cmd, int sektor) {
+    /* Sygnał 3: natychmiastowa ewakuacja zatrzymujemy zegar*/
+    if (cmd == 3) {
+        if (*zegar_pid > 0) {
+            /* kill(): wysyła sygnał SIGTERM do procesu zegara*/
+            if (kill(*zegar_pid, SIGTERM) == -1 && errno != ESRCH) warn_errno("kill(zegar)");
+
+            /* waitpid(): czekamy aż zegar się zakończy*/
+            while (waitpid(*zegar_pid, NULL, 0) == -1 && errno == EINTR) {}
+            *zegar_pid = -1;
+        }
+
+        ewakuacja(msgid, stan);
+        return 1; /* koniec */
+    }
+
+    /* Sygnały 1/2: blokuj/odblokuj konkretny sektor*/
+    if (cmd == 1 || cmd == 2) {
+        if (sektor < 0 || sektor >= LICZBA_SEKTOROW) {
+            printf("[KIEROWNIK] Błąd: sektor musi być liczbą 0-7\n");
+            fflush(stdout);
+            return 0;
+        }
+
+        MsgSterujacy msg = {10 + sektor, cmd, sektor};
+
+        /* msgsnd(): wysyła polecenie sterowania do pracownika sektora*/
+        if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
+            if (!(errno == EIDRM || errno == EINVAL)) warn_errno("msgsnd(sterowanie)");
+        }
+        return 0;
+    }
+
+    printf("[KIEROWNIK] Błąd: wpisz 1, 2 albo 3\n");
+    fflush(stdout);
+    return 0;
+}
+
 int main() {
     setbuf(stdout, NULL);
 
     /* msgget(): pobiera istniejącą kolejkę komunikatów*/
     int msgid = msgget(KEY_MSG, 0600);
     if (msgid == -1) die_errno("msgget");
+
+    /* semget(): pobiera istniejący zestaw semaforów*/
+    int semid = semget(KEY_SEM, 0, 0600);
+    if (semid == -1) die_errno("semget");
 
     /* shmget(): pobiera segment pamięci współdzielonej*/
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
@@ -71,54 +215,60 @@ int main() {
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) die_errno("shmat");
 
-    /* Stan początkowy*/
-    stan->status_meczu = 0;
-    stan->czas_pozostaly = CZAS_PRZED_MECZEM;
+    /* Próba zostania masterem: tylko master uruchamia zegar */
+    int is_master = try_become_master(semid);
 
-    /*
-     * Zegar meczu:
-     *  - odlicza do startu,
-     *  - potem odlicza czas meczu,
-     */
-    /* fork(): tworzy proces potomny, tu: zegar*/
-    pid_t zegar_pid = fork();
-    if (zegar_pid == -1) die_errno("fork(zegar)");
-    if (zegar_pid == 0) {
-        /* Dziecko: aktualizuje stan czasu w shm*/
-        time_t start = time(NULL);
-        if (start == (time_t)-1) die_errno("time");
+    if (!is_master) {
+        /*
+         * KONTROLER: nie uruchamia zegara i nie zmienia stanu meczu.
+         * Tylko zbiera komendy z klawiatury i przesyła je do mastera.
+         */
+        printf("[KONTROLER] Master-kierownik już działa. Wysyłam tylko komendy.\n");
+        printf("Komendy: 1-stop, 2-start, 3-ewakuacja\n");
+        fflush(stdout);
 
         while (1) {
-            time_t now = time(NULL);
-            if (now == (time_t)-1) die_errno("time");
-            int left = CZAS_PRZED_MECZEM - (int)(now - start);
-            if (left <= 0) break;
-            stan->czas_pozostaly = left;
-            sleep(1);
+            int cmd;
+            int rc = read_int_line(NULL, &cmd);
+            if (rc == -1) break;
+            if (rc == 0 || (cmd != 1 && cmd != 2 && cmd != 3)) {
+                printf("[KONTROLER] Błąd: wpisz 1, 2 albo 3\n");
+                fflush(stdout);
+                continue;
+            }
+
+            if (cmd == 3) {
+                send_to_master(msgid, 3, -1);
+                continue;
+            }
+
+            int s;
+            int rs = read_int_line("Sektor (0-7): ", &s);
+            if (rs == -1) break;
+            if (rs != 1 || s < 0 || s >= LICZBA_SEKTOROW) {
+                printf("[KONTROLER] Błąd: sektor musi być liczbą 0-7\n");
+                fflush(stdout);
+                continue;
+            }
+
+            send_to_master(msgid, cmd, s);
         }
 
-        /* Start meczu*/
-        stan->status_meczu = 1;
-        stan->czas_pozostaly = CZAS_MECZU;
+        /* shmdt(): odłącza shm od procesu kierownika*/
+        if (shmdt(stan) == -1) warn_errno("shmdt");
+        return 0;
+    }
 
-        start = time(NULL);
-        if (start == (time_t)-1) die_errno("time");
+    /* Stan początkowy (tylko jeśli setup wyzerował stan)*/
+    if (stan->status_meczu == 0 && stan->czas_pozostaly == 0 && !stan->ewakuacja_trwa) {
+        stan->status_meczu = 0;
+        stan->czas_pozostaly = CZAS_PRZED_MECZEM;
+    }
 
-        while (1) {
-            time_t now = time(NULL);
-            if (now == (time_t)-1) die_errno("time");
-            int left = CZAS_MECZU - (int)(now - start);
-            if (left <= 0) break;
-            stan->czas_pozostaly = left;
-            sleep(1);
-        }
-
-        /* Koniec meczu zegar kończy działanie*/
-        stan->status_meczu = 2;
-        stan->czas_pozostaly = 0;
-
-        /* exit(): kończy proces potomny*/
-        exit(0);
+    /* Zegar meczu uruchamia tylko master*/
+    pid_t zegar_pid = -1;
+    if (!stan->ewakuacja_trwa && stan->status_meczu == 0) {
+        zegar_pid = start_clock_process(stan);
     }
 
     printf("Komendy: 1-stop, 2-start, 3-ewakuacja\n");
@@ -132,12 +282,32 @@ int main() {
          * Sprawdzamy, czy zegar już się zakończył:
          * jeśli tak -> automatyczna ewakuacja
          */
+        if (zegar_pid > 0) {
+            while (1) {
+                pid_t w = waitpid(zegar_pid, NULL, WNOHANG);
+                if (w > 0) { ewakuacja(msgid, stan); goto out; }
+                if (w == 0) break;
+                if (errno == EINTR) continue;
+                warn_errno("waitpid(WNOHANG)");
+                break;
+            }
+        }
+
+        /* Odbiór komend od kontrolerów (nie blokuj) */
         while (1) {
-            pid_t w = waitpid(zegar_pid, NULL, WNOHANG);
-            if (w > 0) { ewakuacja(msgid, stan); goto out; }
-            if (w == 0) break;
+            MsgSterujacy c;
+
+            /* msgrcv(): odbiera komunikat z kolejki*/
+            ssize_t r = msgrcv(msgid, &c, sizeof(int) * 2, MSGTYPE_KIEROWNIK_CTRL, IPC_NOWAIT);
+            if (r >= 0) {
+                if (handle_cmd_master(msgid, stan, &zegar_pid, c.typ_sygnalu, c.sektor_id)) goto out;
+                continue;
+            }
+
+            if (errno == ENOMSG) break;
             if (errno == EINTR) continue;
-            warn_errno("waitpid(WNOHANG)");
+            if (errno == EIDRM || errno == EINVAL) goto out;
+            warn_errno("msgrcv(ctrl)");
             break;
         }
 
@@ -155,36 +325,36 @@ int main() {
 
         if (ret > 0) {
             int cmd;
-            if (scanf("%d", &cmd) == 1) {
+            int rc = read_int_line(NULL, &cmd);
+            if (rc == -1) break;
 
-                /* Sygnał 3: natychmiastowa ewakuacja zatrzymujemy zegar*/
-                if (cmd == 3) {
-                    /* kill(): wysyła sygnał SIGTERM do procesu zegara*/
-                    if (kill(zegar_pid, SIGTERM) == -1 && errno != ESRCH) warn_errno("kill(zegar)");
-
-                    /* waitpid(): czekamy aż zegar się zakończy*/
-                    while (waitpid(zegar_pid, NULL, 0) == -1 && errno == EINTR) {}
-
-                    ewakuacja(msgid, stan);
-                    break;
-                }
-
-                /* Sygnały 1/2: blokuj/odblokuj konkretny sektor*/
-                if (cmd == 1 || cmd == 2) {
-                    int s;
-                    printf("Sektor (0-7): ");
-                    fflush(stdout);
-
-                    if (scanf("%d", &s) == 1 && s >= 0 && s < LICZBA_SEKTOROW) {
-                        MsgSterujacy msg = {10 + s, cmd, s};
-
-                        /* msgsnd(): wysyła polecenie sterowania do pracownika sektora*/
-                        if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
-                            if (!(errno == EIDRM || errno == EINVAL)) warn_errno("msgsnd(sterowanie)");
-                        }
-                    }
-                }
+            if (rc == 0) {
+                printf("[KIEROWNIK] Błąd: wpisz 1, 2 albo 3\n");
+                fflush(stdout);
+                continue;
             }
+
+            if (cmd == 3) {
+                if (handle_cmd_master(msgid, stan, &zegar_pid, 3, -1)) break;
+                continue;
+            }
+
+            if (cmd == 1 || cmd == 2) {
+                int s;
+                int rs = read_int_line("Sektor (0-7): ", &s);
+                if (rs == -1) break;
+                if (rs != 1) {
+                    printf("[KIEROWNIK] Błąd: sektor musi być liczbą 0-7\n");
+                    fflush(stdout);
+                    continue;
+                }
+
+                if (handle_cmd_master(msgid, stan, &zegar_pid, cmd, s)) break;
+                continue;
+            }
+
+            printf("[KIEROWNIK] Błąd: wpisz 1, 2 albo 3\n");
+            fflush(stdout);
         }
     }
 
@@ -194,9 +364,12 @@ out:
 
     /* Na wszelki wypadek dobijam zegar jeśli jeszcze żyje*/
     /* kill(): wysyła sygnał do procesu*/
-    if (kill(zegar_pid, SIGTERM) == -1 && errno != ESRCH) warn_errno("kill(zegar)");
+    if (zegar_pid > 0) {
+        if (kill(zegar_pid, SIGTERM) == -1 && errno != ESRCH) warn_errno("kill(zegar)");
 
-    /* waitpid(): sprząta proces potomny żeby nam się zombie nie zrobił*/
-    while (waitpid(zegar_pid, NULL, 0) == -1 && errno == EINTR) {}
+        /* waitpid(): sprząta proces potomny żeby nam się zombie nie zrobił*/
+        while (waitpid(zegar_pid, NULL, 0) == -1 && errno == EINTR) {}
+    }
+
     return 0;
 }

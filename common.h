@@ -174,6 +174,7 @@ typedef struct {
 #define SEM_SHM 0
 #define SEM_KASY 1
 #define SEM_SEKTOR_START 2
+#define SEM_KIEROWNIK (SEM_SEKTOR_START + LICZBA_SEKTOROW)
 
 /* =========================
  * Kolory ANSI do logów
