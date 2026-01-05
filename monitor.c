@@ -7,22 +7,38 @@ void print_timer(int sekundy) {
 }
 
 int main() {
+    /* shmget(): pobiera segment pamięci współdzielonej*/
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
     if (shmid == -1) {
         warn_errno("shmget");
         fprintf(stderr, "Uruchom najpierw ./setup\n");
+        /* exit(): kończy proces*/
         exit(EXIT_FAILURE);
     }
 
+    /* shmat(): mapuje pamięć współdzieloną do przestrzeni adresowej procesu*/
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) {
         die_errno("shmat");
     }
 
+    /*
+     * Monitor działa w pętli i podgląda stan:
+     *  - status meczu + timer
+     *  - kolejki przed kasami
+     *  - aktywne kasy
+     *  - sprzedaż biletów (sektory + VIP)
+     *  - ilu obecnych w sektorach
+     *  - stan bramek i blokady sektorów
+     */
     while (1) {
         if (stan->ewakuacja_trwa) break;
+
         printf("\033[H\033[J");
+
         printf("================================================================\n");
+
+        /* Status meczu*/
         if (stan->status_meczu == 0) {
             printf("OCZEKIWANIE NA MECZ (START ZA: ");
             printf("\033[1;33m");
@@ -36,11 +52,14 @@ int main() {
         } else {
             printf("\033[1;31mMECZ ZAKOŃCZONY - EWAKUACJA\033[0m\n");
         }
+
         printf("================================================================\n");
 
+        /* Podgląd kolejek*/
         printf("KOLEJKA PRZED HALĄ: Zwykli: %d | VIP: %d\n",
                stan->kolejka_zwykla, stan->kolejka_vip);
 
+        /* Podgląd statusu kas*/
         printf("\n--- STATUS KAS ---\n");
         for (int i = 0; i < LICZBA_KAS; i++) {
             if (stan->aktywne_kasy[i]) printf("[ON ] ");
@@ -48,15 +67,19 @@ int main() {
         }
         printf("\n");
 
+        /* Sprzedaż biletów per sektor + VIP*/
         printf("\n--- SPRZEDAŻ BILETÓW ---\n");
         for (int i = 0; i < LICZBA_SEKTOROW; i++) {
             printf("S%d: %3d | ", i, stan->sprzedane_bilety[i]);
             if ((i + 1) % 4 == 0) printf("\n");
         }
+
+        /* Limit VIP*/
         int limit_vip = (int)(K * 0.003);
         if (limit_vip < 1) limit_vip = 1;
         printf("VIP: %3d / %d\n", stan->sprzedane_bilety[SEKTOR_VIP], limit_vip);
 
+        /* Ilu kibiców faktycznie siedzi w sektorach + VIP). */
         printf("\n--- OBECNI NA HALI (WEDŁUG SEKTORÓW) ---\n");
         for (int i = 0; i < LICZBA_SEKTOROW; i++) {
             printf("S%d: %3d | ", i, stan->obecni_w_sektorze[i]);
@@ -64,26 +87,34 @@ int main() {
         }
         printf("VIP: %3d\n", stan->obecni_w_sektorze[SEKTOR_VIP]);
 
+        /*
+         * Bramki: dla każdego sektora są 2 bramki.
+         * Monitor pokazuje:
+         *  - zajętość bramki,
+         *  - drużynę aktualnie w bramce gdy ktoś stoi,
+         *  - oraz ewentualną blokadę sektora
+         */
         printf("\n--- KONTROLA BEZPIECZEŃSTWA ---\n");
         for (int i = 0; i < LICZBA_SEKTOROW; i++) {
             int n0 = stan->bramki[i][0].zajetosc;
             int d0 = stan->bramki[i][0].druzyna;
             int n1 = stan->bramki[i][1].zajetosc;
             int d1 = stan->bramki[i][1].druzyna;
+
             char s0[64], s1[64];
-            if (n0 > 0) sprintf(s0, "[%d:%d]", n0, d0);
-            else sprintf(s0, "[ . ]");
-            if (n1 > 0) sprintf(s1, "[%d:%d]", n1, d1);
-            else sprintf(s1, "[ . ]");
+            if (n0 > 0) sprintf(s0, "[%d:%d]", n0, d0); else sprintf(s0, "[ . ]");
+            if (n1 > 0) sprintf(s1, "[%d:%d]", n1, d1); else sprintf(s1, "[ . ]");
+
             printf("SEKTOR %d: %-10s | %-10s ", i, s0, s1);
             if (stan->blokada_sektora[i]) printf("[BLOKADA]");
             printf("\n");
         }
 
         fflush(stdout);
-        usleep(500000);
+        usleep(500000); /* Odświeżanie*/
     }
 
+    /* shmdt(): odłącza shm od procesu monitora. */
     if (shmdt(stan) == -1) warn_errno("shmdt");
     return 0;
 }
