@@ -12,6 +12,7 @@ static void sem_op(int semid, int idx, int op) {
     }
 }
 
+/* Aktualizacja liczby obecnych w sektorze*/
 static void obecni_inc(SharedState *stan, int semid, int sektor) {
     sem_op(semid, SEM_SHM, -1);
     stan->obecni_w_sektorze[sektor]++;
@@ -32,26 +33,37 @@ static const char* team_name(int druzyna) {
     return (druzyna == 0) ? "GOSP" : "GOSC";
 }
 
+/*
+ * Dopisanie rekordu do raportu:
+ *  - typ: vip / opiekun / zwykly
+ *  - sektor: docelowy sektor (0..7 albo VIP)
+ */
 static void append_report(int kibic_id, int wiek, int sektor) {
     const char *typ = (sektor == SEKTOR_VIP) ? "vip" : ((wiek < 15) ? "opiekun" : "zwykly");
 
+    /* open(): otwiera plik raportu do dopisywania*/
     int fd = open("raport.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd == -1) { warn_errno("open(raport.txt)"); return; }
 
+    /* Blokada pliku, żeby wpisy z wielu procesów się nie mieszały*/
     if (flock(fd, LOCK_EX) == -1) {
         warn_errno("flock(LOCK_EX)");
+        /* close(): zamyka deskryptor pliku*/
         if (close(fd) == -1) warn_errno("close(raport.txt)");
         return;
     }
 
+    /* Dopisanie jednej linijki (id typ sektor)*/
     if (dprintf(fd, "%d %s %d\n", kibic_id, typ, sektor) < 0) {
         warn_errno("dprintf(raport.txt)");
     }
 
     if (flock(fd, LOCK_UN) == -1) warn_errno("flock(LOCK_UN)");
+    /* close(): zamyka deskryptor pliku*/
     if (close(fd) == -1) warn_errno("close(raport.txt)");
 }
 
+/* Statystyki kto wszedł*/
 static void bump_entered(SharedState *stan, int semid, int wiek, int is_kolega) {
     sem_op(semid, SEM_SHM, -1);
     stan->cnt_weszlo++;
@@ -60,6 +72,7 @@ static void bump_entered(SharedState *stan, int semid, int wiek, int is_kolega) 
     sem_op(semid, SEM_SHM, 1);
 }
 
+/* Statystyka agresji*/
 static void bump_agresja(SharedState *stan, int semid) {
     sem_op(semid, SEM_SHM, -1);
     stan->cnt_agresja++;
@@ -68,8 +81,10 @@ static void bump_agresja(SharedState *stan, int semid) {
 
 int main(int argc, char *argv[]) {
     setbuf(stdout, NULL);
+
     if (argc != 3 && argc != 4) {
         fprintf(stderr, "Użycie: %s <id> <vip> [ma_juz_bilet]\n", argv[0]);
+        /* exit(): kończy proces*/
         exit(1);
     }
 
@@ -77,38 +92,33 @@ int main(int argc, char *argv[]) {
     int is_vip = atoi(argv[2]);
     int ma_juz_bilet = (argc == 4) ? atoi(argv[3]) : 0;
 
+    /* Losowanie wieku i drużyny*/
     srand(time(NULL) ^ (getpid() << 16));
     int wiek = 10 + rand() % 60;
     int druzyna = rand() % 2;
 
+    /* Podłączenie do IPC. */
+    /* shmget(): pobiera segment pamięci współdzielonej*/
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
-    if (shmid == -1) {
-        warn_errno("shmget");
-        exit(EXIT_FAILURE);
-    }
+    if (shmid == -1) { warn_errno("shmget"); exit(EXIT_FAILURE); }
 
+    /* semget(): pobiera zestaw semaforów*/
     int semid = semget(KEY_SEM, 0, 0600);
-    if (semid == -1) {
-        warn_errno("semget");
-        exit(EXIT_FAILURE);
-    }
+    if (semid == -1) { warn_errno("semget"); exit(EXIT_FAILURE); }
 
+    /* msgget(): pobiera kolejkę komunikatów*/
     int msgid = msgget(KEY_MSG, 0600);
-    if (msgid == -1) {
-        warn_errno("msgget");
-        exit(EXIT_FAILURE);
-    }
+    if (msgid == -1) { warn_errno("msgget"); exit(EXIT_FAILURE); }
 
+    /* shmat(): mapuje shm do pamięci procesu*/
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) die_errno("shmat");
-
     if (wiek < 15 && !is_vip) usleep(1000);
     if (stan->ewakuacja_trwa) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
-
     if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
-
     if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
+    /*Jeśli nie ma biletu: dołącza do kolejki i wysyła request do kasjera*/
     if (!ma_juz_bilet) {
         sem_op(semid, SEM_KASY, -1);
         if (is_vip) stan->kolejka_vip++;
@@ -119,24 +129,25 @@ int main(int argc, char *argv[]) {
         req.mtype = is_vip ? MSGTYPE_VIP_REQ : MSGTYPE_STD_REQ;
         req.kibic_id = my_id;
 
+        /* msgsnd(): wysyła żądanie do kolejki komunikatów*/
         while (msgsnd(msgid, &req, sizeof(int), 0) == -1) {
             if (errno == EINTR) continue;
-            if (errno == EIDRM || errno == EINVAL) {
-                if (shmdt(stan) == -1) warn_errno("shmdt");
-                exit(0);
-            }
+            if (errno == EIDRM || errno == EINVAL) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
             warn_errno("msgsnd(kolejka)");
             if (shmdt(stan) == -1) warn_errno("shmdt");
             exit(EXIT_FAILURE);
         }
     }
 
+    /*Oczekiwanie na bilet*/
     MsgBilet bilet;
     while (1) {
         if (stan->ewakuacja_trwa) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
         if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
         long my_ticket_type = MSGTYPE_TICKET_BASE + my_id;
+
+        /* msgrcv(): odbiera odpowiedź-bilet z kolejki*/
         ssize_t r = msgrcv(msgid, &bilet, sizeof(int), my_ticket_type, IPC_NOWAIT);
         if (r >= 0) break;
 
@@ -157,34 +168,50 @@ int main(int argc, char *argv[]) {
 
     int sektor = bilet.sektor_id;
 
+    /* Dopisujemy wejście do raportu*/
     append_report(my_id, wiek, sektor);
-
     const int is_kolega = (my_id >= DYN_ID_START);
 
+    /*
+     * Ścieżka VIP:
+     *  - wchodzi bez bramek,
+     *  - liczy się w statystykach
+     */
     if (sektor == SEKTOR_VIP) {
         bump_entered(stan, semid, wiek, is_kolega);
         printf(CLR_YELLOW "[VIP %d] WEJŚCIE VIP" CLR_RESET "\n", my_id);
         fflush(stdout);
+
         obecni_inc(stan, semid, SEKTOR_VIP);
         while (!stan->ewakuacja_trwa) usleep(200000);
         obecni_dec(stan, semid, SEKTOR_VIP);
+
         if (shmdt(stan) == -1) warn_errno("shmdt");
         exit(0);
     }
 
+    /*
+     * Ścieżka standard:
+     *  - próbuje wejść przez jedną z 2 bramek sektora,
+     *  - bramka ma limit osób + nie miesza drużyn
+     */
     int sem_sektora = SEM_SEKTOR_START + sektor;
     int cierpliwosc = 0;
     int wszedl_do_sektora = 0;
 
     while (1) {
         if (stan->ewakuacja_trwa) break;
+
+        /* Kierownik może zablokować sektor*/
         if (stan->blokada_sektora[sektor]) { usleep(200000); continue; }
 
+        /* Semafor sektora: chroni stan bramek danego sektora*/
         sem_op(semid, sem_sektora, -1);
 
         int wybrane = -1;
-        int powod = 0;
+        int powod = 0; // 1=konflikt drużyny, 2=pełno
 
+        /* Szukamy bramki: albo pusta, albo zajęta przez naszą drużynę*/
         for (int i = 0; i < 2; i++) {
             int n = stan->bramki[sektor][i].zajetosc;
             int d = stan->bramki[sektor][i].druzyna;
@@ -198,6 +225,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (wybrane != -1) {
+            /* Udane wejście do bramki = liczymy jako wszedł w statystykach*/
             bump_entered(stan, semid, wiek, is_kolega);
 
             stan->bramki[sektor][wybrane].zajetosc++;
@@ -218,22 +246,27 @@ int main(int argc, char *argv[]) {
                        tc, tn, CLR_RESET,
                        stan->bramki[sektor][wybrane].zajetosc);
             }
-
             fflush(stdout);
 
+            /* Zwolnienie semafora*/
             sem_op(semid, sem_sektora, 1);
             usleep(300000);
+
+            /* Aktualizacja bramki po przejściu*/
             sem_op(semid, sem_sektora, -1);
             stan->bramki[sektor][wybrane].zajetosc--;
             sem_op(semid, sem_sektora, 1);
+
             if (!stan->ewakuacja_trwa) wszedl_do_sektora = 1;
             break;
         }
 
+        /* Nie udało się wejść — próbuj później*/
         sem_op(semid, sem_sektora, 1);
 
         cierpliwosc++;
         if (cierpliwosc >= LIMIT_CIERPLIWOSCI) {
+            /* Po kolejnych nieudanych próbach wejścia kibic odpada jako agresywny*/
             bump_agresja(stan, semid);
             printf(CLR_RED "[AGRESJA] KIBIC %d (DR %d) W SZALE POD SEKTOREM %d !!!" CLR_RESET "\n",
                    my_id, druzyna, sektor);
@@ -244,12 +277,14 @@ int main(int argc, char *argv[]) {
         usleep(100000);
     }
 
+    /* Jeśli realnie wszedł do sektora, to siedzi do ewakuacji lub końca meczu*/
     if (wszedl_do_sektora) {
         obecni_inc(stan, semid, sektor);
         while (!stan->ewakuacja_trwa) usleep(200000);
         obecni_dec(stan, semid, sektor);
     }
 
+    /* shmdt(): odłącza shm od procesu*/
     if (shmdt(stan) == -1) warn_errno("shmdt");
     return 0;
 }
