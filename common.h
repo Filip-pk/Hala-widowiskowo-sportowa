@@ -1,6 +1,15 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+ /* Wspólne definicje dla całej symulacji”.
+ * Mamy tutaj:
+ *  - stałe konfiguracyjne (pojemności, czasy, limity),
+ *  - klucze IPC (System V: shm/sem/msg),
+ *  - struktury pamięci współdzielonej (SharedState),
+ *  - formaty komunikatów (kolejka wiadomości),
+ *  - indeksy semaforów oraz sekwencje ANSI do kolorowania logów.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -15,6 +24,13 @@
 #include <time.h>
 #include <signal.h>
 
+/*
+ * Helpery do diagnostyki błędów systemowych.
+ * Użycie:
+ *   if (shmget(...) == -1) die_errno("shmget");
+ * warn_errno() wypisuje błąd (perror) + numer errno i jego opis,
+ * die_errno() robi to samo, a potem kończy proces kodem EXIT_FAILURE.
+ */
 static inline void warn_errno(const char *ctx) {
     int e = errno;
     perror(ctx);
@@ -26,49 +42,104 @@ static inline void die_errno(const char *ctx) {
     exit(EXIT_FAILURE);
 }
 
+/* =========================
+ * Parametry symulacji
+ * ========================= */
+
+/* K – liczba kibicow. */
 #define K 2000
+
+/* Sektory standardowe*/
 #define LICZBA_SEKTOROW 8
+
+/* Sektor VIP*/
 #define SEKTOR_VIP 8
+
+/* Liczba kas*/
 #define LICZBA_KAS 10
+
+/* Maksymalna liczba osób jednocześnie w jednej bramce*/
 #define MAX_NA_STANOWISKU 3
+
+/* Licznik prób wejścia kibica*/
 #define LIMIT_CIERPLIWOSCI 5
+
+/* Czas do rozpoczęcia meczu w sekundach*/
 #define CZAS_PRZED_MECZEM 10
+
+/* Czas trwania meczu w sekundach*/
 #define CZAS_MECZU 200
 
+/* =========================
+ * Klucze IPC
+ * =========================
+ */
 #define KEY_SHM 1234
 #define KEY_SEM 5678
 #define KEY_MSG 9012
 
+/* =========================
+ * Struktury danych
+ * =========================
+ */
+/*
+ * Stanowisko = jedna bramka wejściowa.
+ *
+ * zajetosc – ilu kibiców aktualnie jest w bramce
+ * druzyna  – która drużyna jest aktualnie w bramce
+ */
 typedef struct {
     int zajetosc;
     int druzyna;
 } Stanowisko;
 
 typedef struct {
+    /* Aktualne długości kolejek*/
     int kolejka_zwykla;
     int kolejka_vip;
+
+    /* Czy dana kasa jest aktywna*/
     int aktywne_kasy[LICZBA_KAS];
+
+    /* Ile biletów sprzedano na każdy sektor*/
     int sprzedane_bilety[LICZBA_SEKTOROW + 1];
+
+    /* 2 bramki dla kazdego sektora*/
     Stanowisko bramki[LICZBA_SEKTOROW][2];
 
+    /* Ile osób aktualnie przebywa w sektorze*/
     int obecni_w_sektorze[LICZBA_SEKTOROW + 1];
 
+    /* Flagi blokad sektorów standardowych*/
     int blokada_sektora[LICZBA_SEKTOROW];
+
+    /* Flaga globalna: trwa ewakuacja (1) / nie trwa (0). */
     int ewakuacja_trwa;
+
+    /* Status meczu*/
     int status_meczu;
+
+    /* Licznik czasu w sekundach. */
     int czas_pozostaly;
 
+    /* Generator unikalnych ID dla kibicow*/
     int next_kibic_id;
 
+    /* Flagi wyprzedania biletow i zakończenia sprzedaży. */
     int standard_sold_out;
     int sprzedaz_zakonczona;
 
+    /* Statystyki do raportu końcowego. */
     int cnt_weszlo;
     int cnt_opiekun;
     int cnt_kolega;
     int cnt_agresja;
 } SharedState;
 
+/* =========================
+ * Komunikaty kolejki
+ * =========================
+ */
 typedef struct {
     long mtype;
     int sektor_id;
@@ -85,15 +156,28 @@ typedef struct {
     int kibic_id;
 } MsgKolejka;
 
+/* Typy wiadomości (vip lub zwykly kibic)*/
 #define MSGTYPE_VIP_REQ 1
 #define MSGTYPE_STD_REQ 2
 #define MSGTYPE_TICKET_BASE 10000
 
+/* ID dla kolegow ktorzy nie pojawili sie w kasie*/
 #define DYN_ID_START 50000
 
+/* =========================
+ * Semafory
+ * =========================
+ *  - SEM_SHM: ochrona dostępu do SharedState
+ *  - SEM_KASY: koordynacja kas
+ *  - SEM_SEKTOR_START..: semafory per-sektor
+ */
 #define SEM_SHM 0
 #define SEM_KASY 1
 #define SEM_SEKTOR_START 2
+
+/* =========================
+ * Kolory ANSI do logów
+ * ========================= */
 
 #define CLR_RESET   "\033[0m"
 #define CLR_RED     "\033[1;31m"
