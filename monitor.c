@@ -107,6 +107,7 @@ int main() {
 
             printf("SEKTOR %d: %-10s | %-10s ", i, s0, s1);
             if (stan->blokada_sektora[i]) printf("[BLOKADA]");
+            if (stan->agresor_sektora[i] != 0) printf("[AGRESOR:%d]", stan->agresor_sektora[i]);
             printf("\n");
         }
 

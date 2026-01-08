@@ -198,6 +198,8 @@ int main(int argc, char *argv[]) {
     int sem_sektora = SEM_SEKTOR_START + sektor;
     int cierpliwosc = 0;
     int wszedl_do_sektora = 0;
+    int tryb_agresora = 0;        /* po przekroczeniu limitu cierpliwości */
+    int agresja_ogloszona = 0;    /* żeby komunikat poszedł tylko raz */
 
     while (1) {
         if (stan->ewakuacja_trwa) break;
@@ -205,8 +207,66 @@ int main(int argc, char *argv[]) {
         /* Kierownik może zablokować sektor*/
         if (stan->blokada_sektora[sektor]) { usleep(200000); continue; }
 
-        /* Semafor sektora: chroni stan bramek danego sektora*/
+        /* Semafor sektora: chroni stan bramek + pole agresor_sektora*/
         sem_op(semid, sem_sektora, -1);
+
+        /*
+         * Jeśli ktoś już ma priorytet-agresora w tym sektorze,
+         * to nikt inny nie zaczyna wejścia, poza samym agresorem.
+         */
+        if (stan->agresor_sektora[sektor] != 0 && stan->agresor_sektora[sektor] != my_id) {
+            sem_op(semid, sem_sektora, 1);
+            usleep(100000);
+            continue;
+        }
+
+        /*
+         * Tryb agresora: rezerwujemy sektor
+         * i czekamy aż obie bramki się opróżnią. Wtedy wchodzimy jako pierwsi
+         */
+        if (tryb_agresora) {
+            if (stan->agresor_sektora[sektor] == 0) {
+                stan->agresor_sektora[sektor] = my_id;
+            }
+
+            if (stan->agresor_sektora[sektor] != my_id) {
+                sem_op(semid, sem_sektora, 1);
+                usleep(100000);
+                continue;
+            }
+
+            int empty0 = (stan->bramki[sektor][0].zajetosc == 0);
+            int empty1 = (stan->bramki[sektor][1].zajetosc == 0);
+
+            if (!(empty0 && empty1)) {
+                sem_op(semid, sem_sektora, 1);
+                usleep(50000);
+                continue;
+            }
+
+            /* Wejście agresora*/
+            bump_entered(stan, semid, wiek, is_kolega);
+            stan->bramki[sektor][0].zajetosc++;
+            stan->bramki[sektor][0].druzyna = druzyna;
+            stan->agresor_sektora[sektor] = 0; /* odblokuj wejścia innym */
+
+            const char *tc = team_color(druzyna);
+            const char *tn = team_name(druzyna);
+            printf(CLR_RED "[AGRESOR %d] PRIORYTET! WBIJA do bramki w sektorze %d: %s%s%s. Stan: %d/3" CLR_RESET "\n",
+                   my_id, sektor, tc, tn, CLR_RESET,
+                   stan->bramki[sektor][0].zajetosc);
+            fflush(stdout);
+
+            sem_op(semid, sem_sektora, 1);
+            usleep(300000);
+
+            sem_op(semid, sem_sektora, -1);
+            stan->bramki[sektor][0].zajetosc--;
+            sem_op(semid, sem_sektora, 1);
+
+            if (!stan->ewakuacja_trwa) wszedl_do_sektora = 1;
+            break;
+        }
 
         int wybrane = -1;
         int powod = 0; // 1=konflikt drużyny, 2=pełno
@@ -266,15 +326,30 @@ int main(int argc, char *argv[]) {
 
         cierpliwosc++;
         if (cierpliwosc >= LIMIT_CIERPLIWOSCI) {
-            /* Po kolejnych nieudanych próbach wejścia kibic odpada jako agresywny*/
-            bump_agresja(stan, semid);
-            printf(CLR_RED "[AGRESJA] KIBIC %d (DR %d) W SZALE POD SEKTOREM %d !!!" CLR_RESET "\n",
-                   my_id, druzyna, sektor);
-            fflush(stdout);
-            break;
+            /*
+             * Zamiast usuwać kibica, robimy z niego agresora z priorytetem:
+             * - drukujemy komunikat o agresji,
+             * - blokujemy wejście nowym,
+             * - czekamy aż bramki się opróżnią i wchodzimy
+             */
+            if (!agresja_ogloszona) {
+                bump_agresja(stan, semid);
+                printf(CLR_RED "[AGRESJA] KIBIC %d (DR %d) ZACZYNA ROZPYCHAĆ SIĘ POD SEKTOREM %d — BIERZE PRIORYTET!" CLR_RESET "\n",
+                       my_id, druzyna, sektor);
+                fflush(stdout);
+                agresja_ogloszona = 1;
+            }
+            tryb_agresora = 1;
         }
 
         usleep(100000);
+    }
+
+    /* Sprzątanie*/
+    if (tryb_agresora) {
+        sem_op(semid, sem_sektora, -1);
+        if (stan->agresor_sektora[sektor] == my_id) stan->agresor_sektora[sektor] = 0;
+        sem_op(semid, sem_sektora, 1);
     }
 
     /* Jeśli realnie wszedł do sektora, to siedzi do ewakuacji lub końca meczu*/

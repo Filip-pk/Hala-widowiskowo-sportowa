@@ -113,6 +113,9 @@ typedef struct {
     /* Flagi blokad sektorów standardowych*/
     int blokada_sektora[LICZBA_SEKTOROW];
 
+    /*Priorytet „agresora” pod sektorem.*/
+    int agresor_sektora[LICZBA_SEKTOROW];
+
     /* Flaga globalna: trwa ewakuacja (1) / nie trwa (0). */
     int ewakuacja_trwa;
 
