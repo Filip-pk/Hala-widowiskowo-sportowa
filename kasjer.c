@@ -54,9 +54,13 @@ static void spawn_friend_kibic(int friend_id) {
         return;
     }
     if (pid == 0) {
-        char idbuf[32];
+        char idbuf[32], racabuf[8];
         sprintf(idbuf, "%d", friend_id);
-        execl("./kibic", "kibic", idbuf, "0", "1", NULL);
+        /* ~0.5% kibiców ma race (także koledzy) */
+        int has_raca = (rand() % 1000 < 5) ? 1 : 0;
+        sprintf(racabuf, "%d", has_raca);
+        /* args: id, vip=0, has_raca, ma_juz_bilet=1 */
+        execl("./kibic", "kibic", idbuf, "0", racabuf, "1", NULL);
         die_errno("execl(spawn_friend_kibic)");
     }
 }

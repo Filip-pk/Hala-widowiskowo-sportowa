@@ -128,11 +128,14 @@ int main() {
         pid_t pk = fork();
         if (pk == -1) die_errno("fork(kibic)");
         if (pk == 0) {
-            char id[20], v[8];
+            char id[20], v[8], r[8];
             sprintf(id, "%d", i);
             sprintf(v, "%d", is_vip);
+            /* ~0.5% kibiców ma race */
+            int has_raca = (rand() % 1000 < 5) ? 1 : 0;
+            sprintf(r, "%d", has_raca);
             /* exec(): uruchamia ./kibic*/
-            execl("./kibic", "kibic", id, v, NULL);
+            execl("./kibic", "kibic", id, v, r, NULL);
             die_errno("execl(kibic)");
         }
 
