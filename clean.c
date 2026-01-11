@@ -1,5 +1,12 @@
 #include "common.h"
 
+/*
+ * ==================
+ * CLEAN: sprzątanie
+ * ==================
+ * ./clean usuwa zasoby po kluczach KEY_* i jest wołany przez main na końcu.
+ */
+
 int main() {
     /* shmget(): próba znalezienia istniejącego segmentu shm*/
     int shmid = shmget(KEY_SHM, 0, 0600);

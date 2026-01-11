@@ -1,5 +1,26 @@
 #include "common.h"
 #include <sys/wait.h>
+/*
+ * ==========================
+ * KASJER: SPRZEDAŻ BILETÓW
+ * ==========================
+ * Kasjer to proces, który:
+ *  - odbiera żądania z kolejki komunikatów (msg): VIP i STANDARD,
+ *  - trzyma priorytet VIP (najpierw MSGTYPE_VIP_REQ, potem MSGTYPE_STD_REQ),
+ *  - przydziela sektor i aktualizuje liczniki w pamięci współdzielonej (shm),
+ *  - dynamicznie otwiera/zamyka kasy w zależności od długości kolejki,
+ *  - przy sprzedaży 2 biletów uruchamia dodatkowego kolegę jako osobny proces,
+ *  - obsługuje SOLD OUT: standard_sold_out / sprzedaz_zakonczona oraz czyści kolejki.
+ *
+ * Synchronizacja:
+ *  - SEM_KASY: chroni pola związane z kasami (kolejki, aktywne_kasy),
+ *  - SEM_SHM: chroni liczniki sprzedaży i flagi sold out w SharedState.
+ *
+ * Komunikacja:
+ *  - kibic -> kasjer: MsgKolejka o mtype=MSGTYPE_VIP_REQ lub MSGTYPE_STD_REQ,
+ *  - kasjer -> kibic: MsgBilet o mtype=MSGTYPE_TICKET_BASE + kibic_id.
+ */
+
 
 /*semop(): zmienia wartość semafora*/
 static void sem_op(int semid, int idx, int op) {
@@ -145,6 +166,18 @@ int main(int argc, char *argv[]) {
         int klient_typ = 0; // 1=VIP, 2=STD
         int kibic_id = -1;
 
+/*
+ * ==========================================
+ * AUTO-OTWIERANIE / AUTO-ZAMYKANIE KAS (SEM_KASY)
+ * ==========================================
+ * Idea:
+ *  - im dłuższa kolejka, tym więcej kas powinno być aktywnych,
+ *  - gdy kolejka maleje, nadmiarowe kasy mogą się wyłączać,
+ *    ale zostawiamy minimum 2 kasy jako „bazę”.
+ *
+ * k_10 = K/10 jest skalą ile osób „na jedną kasę”
+ */
+
         /* Sekcja do zarządzania aktywnymi kasami*/
         sem_op(semid, SEM_KASY, -1);
 
@@ -185,6 +218,19 @@ int main(int argc, char *argv[]) {
         sem_op(semid, SEM_KASY, 1);
 
         MsgKolejka req;
+
+/*
+ * ==================================
+ * PRIORYTET VIP W OBSŁUDZE KOLEJKI MSG
+ * ==================================
+ * Najpierw próbujemy zdjąć żądanie VIP (MSGTYPE_VIP_REQ),
+ * dopiero jeśli nic nie ma, obsługujemy standard (MSGTYPE_STD_REQ).
+ *
+ * Odbieramy IPC_NOWAIT, żeby kasjer:
+ *  - nie blokował się na pustej kolejce,
+ *  - mógł reagować na zmiany stanu (sprzedaz_zakonczona/ewakuacja),
+ *  - mógł wykonywać auto-otwieranie/zamykanie kas.
+ */
 
         /* Priorytet: VIP zawsze pierwszy*/
         if (q_vip > 0) {
@@ -251,6 +297,22 @@ int main(int argc, char *argv[]) {
             }
 
             send_ticket(msgid, kibic_id, sektor);
+
+/*
+ * ===========================
+ * SOLD OUT i czyszczenie kolejek
+ * ===========================
+ * Dwie flagi w shm:
+ *  - standard_sold_out: brak miejsc w sektorach 0..7 -> kończymy obsługę STD,
+ *  - sprzedaz_zakonczona: brak miejsc także w VIP -> kończymy całą sprzedaż.
+ *
+ * Po zakończeniu sprzedaży:
+ *  - wyłączamy wszystkie kasy (aktywne_kasy[]=0),
+ *  - zerujemy liczniki kolejek,
+ *  - czyścimy kolejkę msg przez cancel_queue_type():
+ *    odbieramy każde oczekujące żądanie i odsyłamy bilet -1.
+ *    Dzięki temu kibice nie wiszą w nieskończoność.
+ */
 
             /* Jeśli koniec sprzedaży: wyłączamy kasy i czyścimy kolejki*/
             if (stan->sprzedaz_zakonczona) {
@@ -378,6 +440,20 @@ int main(int argc, char *argv[]) {
             fflush(stdout);
             continue;
         }
+
+/*
+ * =========================
+ * 2 BILETY -> KOLEGA
+ * =========================
+ * Gdy klient kupuje 2 bilety
+ * Tworzymy osobny proces kibica (spawn_friend_kibic), żeby:
+ *  - realnie zwiększyć tłok przy bramkach,
+ *  - zasilić statystyki i raport,
+ *  - mieć spójny model (każdy kibic = proces).
+ *
+ * friend_id pochodzi ze wspólnego licznika next_kibic_id w shm,
+ * żeby nie kolidował z ID kibiców generowanych w main().
+ */
 
         /* Jeśli była para biletów: odpalamy proces kolegi i wysyłamy mu bilet. */
         if (friend_id != -1 && ile_sprzedane == 2) {

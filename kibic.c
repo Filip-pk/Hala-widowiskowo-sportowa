@@ -2,6 +2,26 @@
 
 #include <fcntl.h>
 #include <sys/file.h>
+/*
+ * ===================
+ * KIBIC
+ * ===================
+ * Kibic jest osobnym procesem, który przechodzi etapy:
+ *  1) (opcjonalnie) ustawienie się w kolejce do kas i wysłanie żądania (msg),
+ *  2) odebranie biletu (msg) i zapis do raportu (plik + flock),
+ *  3) wejście na stadion:
+ *      - VIP: bez bramek, ale z kontrolą racy,
+ *      - standard: przez 2 bramki w sektorze + limit osób + brak mieszania drużyn,
+ *  4) siedzenie w sektorze (licznik obecnych w shm),
+ *  5) wyjście przy ewakuacji (stan->ewakuacja_trwa).
+ *
+ * Kluczowe mechanizmy:
+ *  - msg: komunikacja z kasjerami (żądanie i bilet),
+ *  - shm: wspólny stan (blokady sektorów, bramki, ewakuacja, statystyki),
+ *  - semafory: SEM_KASY dla kolejek, SEM_SEKTOR_* dla bramek, SEM_SHM dla liczników,
+ *  - raport.txt: dopisywanie atomowe przez open()+flock()+dprintf().
+ */
+
 
 static void sem_op(int semid, int idx, int op) {
     struct sembuf sb = {(unsigned short)idx, (short)op, 0};
@@ -139,6 +159,20 @@ int main(int argc, char *argv[]) {
     if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
     if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
+/*
+ * =======================================
+ * KOLEJKA DO KAS: shm + msg (SEM_KASY)
+ * =======================================
+ *  - Najpierw zwiększamy licznik kolejki w shm (kolejka_vip lub kolejka_zwykla).
+ *    Robimy to pod SEM_KASY, bo ten licznik jest współdzielony z kasjerami.
+ *  - Potem wysyłamy MsgKolejka na kolejkę msg:
+ *      mtype = MSGTYPE_VIP_REQ albo MSGTYPE_STD_REQ,
+ *      kibic_id = my_id.
+ *
+ * Kasjer odbiera te żądania i odsyła MsgBilet na typ:
+ *  MSGTYPE_TICKET_BASE + my_id (unikalne „kanały” odpowiedzi per kibic).
+ */
+
     /*Jeśli nie ma biletu: dołącza do kolejki i wysyła request do kasjera*/
     if (!ma_juz_bilet) {
         sem_op(semid, SEM_KASY, -1);
@@ -159,6 +193,17 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
     }
+
+/*
+ * ======================
+ * OCZEKIWANIE NA BILET
+ * ======================
+ * Odbieramy bilet nieblokująco (IPC_NOWAIT), żeby móc przerwać oczekiwanie gdy:
+ *  - ruszy ewakuacja,
+ *  - sprzedaż się zakończy (sprzedaz_zakonczona).
+ *
+ * Dzięki temu kibic nie wisi na msgrcv().
+ */
 
     /*Oczekiwanie na bilet*/
     MsgBilet bilet;
@@ -189,15 +234,27 @@ int main(int argc, char *argv[]) {
 
     int sektor = bilet.sektor_id;
 
-    /* Dopisujemy wejście do raportu*/
+/*
+ * ==========================
+ * RAPORT
+ * ==========================
+ * Każdy kibic dopisuje jedną linię: "id typ sektor".
+ * Ponieważ działa wiele procesów naraz, używamy:
+ *  - open(..., O_APPEND) żeby system dopisywał na koniec,
+ *  - flock(LOCK_EX) żeby nie przeplatać wpisów.
+ */
     append_report(my_id, wiek, sektor);
     const int is_kolega = (my_id >= DYN_ID_START);
 
-    /*
-     * Ścieżka VIP:
-     *  - wchodzi bez bramek,
-     *  - liczy się w statystykach
-     */
+/*
+ * ==========
+ * ŚCIEŻKA VIP
+ * ==========
+ * VIP omija bramki (nie ma konfliktu drużyn, nie ma limitu 3/stanowisko),
+ * ale nadal jest kontrola bezpieczeństwa:
+ *  - jeśli ma_race=1 -> natychmiastowe wyproszenie.
+ */
+
     if (sektor == SEKTOR_VIP) {
         if (ma_race) {
             printf(CLR_RED "[KONTROLA VIP] WYKRYTO KIBICA %d Z RACĄ — WYPROSZONY!" CLR_RESET "\n", my_id);
@@ -219,12 +276,22 @@ int main(int argc, char *argv[]) {
         exit(0);
     }
 
-    /*
-     * Ścieżka standard:
-     *  - próbuje wejść przez jedną z 2 bramek sektora,
-     *  - bramka ma limit osób + nie miesza drużyn
-     *  - po LIMIT_CIERPLIWOSCI: nie znika, tylko dostaje priorytet
-     */
+/*
+ * ===================
+ * ŚCIEŻKA STANDARD
+ * ===================
+ * Wejście przez bramki sektora:
+ *  - sektor ma 2 bramki (Stanowisko[2]),
+ *  - każda bramka ma limit MAX_NA_STANOWISKU (tu: 3),
+ *  - nie mieszamy drużyn w tej samej bramce:
+ *      jeśli bramka jest zajęta i druzyna != moja -> nie wchodzę.
+ *
+ * Synchronizacja:
+ *  - SEM_SEKTOR_START + sektor chroni bramki[sektor][*] oraz agresor_sektora[sektor].
+ *  - blokada_sektora[sektor] może być ustawiona komendami 1/2 od kierownika
+ *    (pracownik sektora aktualizuje to w shm).
+ */
+
     int sem_sektora = SEM_SEKTOR_START + sektor;
     int cierpliwosc = 0;
     int wszedl_do_sektora = 0;
@@ -351,6 +418,20 @@ int main(int argc, char *argv[]) {
 
         /* Nie udało się wejść — próbuj później*/
         sem_op(semid, sem_sektora, 1);
+
+/*
+ * =============================
+ * AGRESJA
+ * =============================
+ * Gdy kibic długo nie może wejść (LIMIT_CIERPLIWOSCI prób),
+ * włącza tryb agresora:
+ *  - zwiększamy licznik cnt_agresja (statystyka),
+ *  - rezerwujemy sektor przez agresor_sektora[sektor] = my_id,
+ *  - czekamy aż obie bramki będą puste,
+ *  - wchodzimy jako pierwsi i zwalniamy rezerwację.
+ *
+ * To modeluje sytuację „ktoś się przepycha” i chwilowo blokuje innych.
+ */
 
         cierpliwosc++;
         if (cierpliwosc >= LIMIT_CIERPLIWOSCI) {

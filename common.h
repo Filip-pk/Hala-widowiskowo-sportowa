@@ -42,6 +42,16 @@ static inline void die_errno(const char *ctx) {
     exit(EXIT_FAILURE);
 }
 
+/*
+ * KOLEJKA WIADOMOŚCI (msg) - najważniejsze typy:
+ *  - MSGTYPE_VIP_REQ (1):   kibic VIP -> kasjer (prośba o bilet VIP),
+ *  - MSGTYPE_STD_REQ (2):   kibic STD -> kasjer (prośba o bilet standard),
+ *  - MSGTYPE_TICKET_BASE+id: kasjer -> konkretny kibic (odpowiedź: sektor lub -1),
+ *  - mtype = 10 + sektor:   kierownik -> pracownik(sektor) (sygnał 1/2/3),
+ *  - mtype = 99:            pracownik -> kierownik (raport: sektor pusty),
+ *  - mtype = 5000:          kontroler-kierownik -> master-kierownik (przekaz komend).
+ */
+
 /* =========================
  * Parametry symulacji
  * ========================= */
@@ -81,8 +91,6 @@ static inline void die_errno(const char *ctx) {
 /* =========================
  * Struktury danych
  * =========================
- */
-/*
  * Stanowisko = jedna bramka wejściowa.
  *
  * zajetosc – ilu kibiców aktualnie jest w bramce

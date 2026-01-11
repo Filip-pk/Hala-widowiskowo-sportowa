@@ -1,5 +1,23 @@
 #include "common.h"
 
+/*
+ * ==========================
+ * PRACOWNIK SEKTORA
+ * ==========================
+ * Jeden pracownik = jeden sektor (0..7).
+ * Pracownik jest ramieniem wykonawczym kierownika:
+ *  - odbiera MsgSterujacy z kolejki msg o typie mtype = 10 + sektor,
+ *  - wykonuje komendy:
+ *      1 -> blokada_sektora[sektor]=1
+ *      2 -> blokada_sektora[sektor]=0
+ *      3 -> ewakuacja sektora i raport do kierownika (mtype=99)
+ *
+ * Blokada jest w shm
+ *  - kibice mogą ją odczytywać bezpośrednio (bez dodatkowej kolejki),
+ *  - pracownik tylko ustawia flagę, a kibice reagują w swojej pętli wejścia.
+ */
+
+
 static void sem_op(int semid, int idx, int op) {
     struct sembuf sb = {(unsigned short)idx, (short)op, 0};
     while (semop(semid, &sb, 1) == -1) {
@@ -44,6 +62,13 @@ int main(int argc, char *argv[]) {
     while (1) {
         MsgSterujacy msg;
 
+/*
+ * Odbieramy komendy dla tego konkretnego sektora:
+ *  - my_type = 10 + sektor
+ * dzięki temu jeden kanał msg obsługuje wszystkie sektory,
+ * ale każdy pracownik filtruje tylko swoje wiadomości.
+ */
+
         /* msgrcv(): odbiera polecenie z kolejki */
         if (msgrcv(msgid, &msg, sizeof(int) * 2, my_type, 0) == -1) {
             if (errno == EINTR) continue;
@@ -71,6 +96,15 @@ int main(int argc, char *argv[]) {
         } else if (msg.typ_sygnalu == 3) {
             printf("[TECH %d] Sygnał 3 (EWAKUACJA)\n", sektor);
             fflush(stdout);
+
+/*
+ * W ewakuacji warunek „sektor pusty” jest dwuetapowy:
+ *  1) bramki puste (pod semaforem sektora) -> nikt nie jest w przejściu,
+ *  2) obecni_w_sektorze==0 (pod SEM_SHM)  -> nikt nie siedzi w sektorze.
+ *
+ * Dopiero wtedy odsyłamy raport do kierownika (mtype=99),
+ * a kierownik kończy symulację dopiero po zebraniu 8 raportów.
+ */
 
             /* W ewakuacji blokujemy sektor i czekamy aż wszyscy znikną*/
             stan->blokada_sektora[sektor] = 1;

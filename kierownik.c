@@ -6,7 +6,17 @@
 #include <limits.h>
 
 /*
- * Proces „kierownika” steruje symulacją:
+ * ============================
+ * KIEROWNIK: STEROWANIE i SYGNAŁY 1/2/3
+ * ============================
+ * Komendy:
+ *  - 1: BLOKADA sektora (pracownik ustawia blokada_sektora[sektor]=1 w shm)
+ *  - 2: ODBLOKOWANIE sektora (blokada_sektora[sektor]=0)
+ *  - 3: EWAKUACJA globalna (ustawia ewakuacja_trwa=1 + pracownicy opróżniają sektory)
+ */
+
+/*
+ * Proces kierownika steruje symulacją:
  *  - uruchamia zegar meczu,
  *  - przyjmuje komendy stop/start sektora, ewakuacja,
  *  - uruchamia ewakuację, wysyła polecenia do pracowników i zbiera raporty
@@ -68,6 +78,24 @@ static void send_to_master(int msgid, int cmd, int sektor) {
 }
 
 static void ewakuacja(int msgid, SharedState *stan) {
+/*
+ * =====================
+ * EWAKUACJA
+ * =====================
+ * To jest główna „procedura bezpieczeństwa”.
+ * Ustawiamy flagę ewakuacji w shm, żeby:
+ *  - kibice przestali próbować wchodzić i zaczęli kończyć pętle,
+ *  - kasjerzy przestali sprzedawać,
+ *  - pracownicy sektorów wiedzieli, że mają opróżnić sektor.
+ *
+ * Następnie wysyłamy do każdego sektora MsgSterujacy:
+ *  mtype=10+sektor, typ_sygnalu=3.
+ *
+ * Pracownicy odsyłają raporty mtype=99, kiedy:
+ *  - obie bramki sektora są puste,
+ *  - obecni_w_sektorze[sektor]==0.
+ */
+
     /* Start ewakuacji + mecz zakończony*/
     stan->ewakuacja_trwa = 1;
     stan->status_meczu = 2;
@@ -159,6 +187,23 @@ static pid_t start_clock_process(SharedState *stan) {
 }
 
 static int handle_cmd_master(int msgid, SharedState *stan, pid_t *zegar_pid, int cmd, int sektor) {
+/*
+ * ==========================
+ * OBSŁUGA SYGNAŁÓW 1/2/3
+ * ==========================
+ * cmd==1 lub 2:
+ *  - wysyłamy MsgSterujacy do konkretnego pracownika sektora:
+ *      mtype = 10 + sektor
+ *      typ_sygnalu = 1 (blokuj) lub 2 (odblokuj)
+ *
+ * cmd==3:
+ *  - natychmiastowa ewakuacja:
+ *      1) zatrzymujemy proces zegara,
+ *      2) ustawiamy ewakuacja_trwa=1 w shm,
+ *      3) rozsyłamy sygnał 3 do wszystkich sektorów,
+ *      4) czekamy na raporty mtype=99 „sektor pusty”.
+ */
+
     /* Sygnał 3: natychmiastowa ewakuacja zatrzymujemy zegar*/
     if (cmd == 3) {
         if (*zegar_pid > 0) {
@@ -214,6 +259,18 @@ int main() {
     /* shmat(): mapuje shm do pamięci procesu*/
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) die_errno("shmat");
+
+/*
+ * =============================
+ * WYBÓR MASTER-KIEROWNIKA
+ * =============================
+ * Używamy osobnego semafora jako mutexu na rolę mastera.
+ * Pierwszy kierownik, który wykona semop(-1) bez blokowania, zostaje masterem.
+ *
+ * SEM_UNDO:
+ *  - jeśli master padnie, kernel cofnie operację semafora,
+ *    więc kolejny uruchomiony kierownik może zostać masterem.
+ */
 
     /* Próba zostania masterem: tylko master uruchamia zegar */
     int is_master = try_become_master(semid);

@@ -1,5 +1,23 @@
 #include "common.h"
 
+/*
+ * ======================
+ * SETUP: start symulacji
+ * ======================
+ * ./setup tworzy wszystkie zasoby IPC (System V):
+ *  - pamięć współdzieloną (shm): SharedState,
+ *  - semafory (sem): mutexy do shm, kas i sektorów,
+ *  - kolejkę komunikatów (msg): bilety i komendy.
+ *
+ * Dodatkowo resetuje raport.txt i inicjalizuje stan:
+ *  - startujemy z 2 aktywnymi kasami (0 i 1),
+ *  - next_kibic_id ustawiamy na DYN_ID_START (ID dla „kolegów” z 2 biletów).
+ *
+ * Ten plik jest odpalany przed main:
+ *   ./setup
+ *   ./main
+ */
+
 union semun {
     int val;
     struct semid_ds *buf;
@@ -7,7 +25,13 @@ union semun {
 };
 
 int main() {
-    printf("--- SETUP (STRICT MODE) ---\n");
+    printf("--- SETUP ---\n");
+
+/*
+ * raport.txt jest wspólnym artefaktem wyjściowym symulacji.
+ * Resetujemy go na starcie i wpisujemy nagłówek.
+ * Potem kibice dopisują do niego w O_APPEND z flock().
+ */
 
     /* Tworze plik raportu*/
     FILE *rf = fopen("raport.txt", "w");
@@ -45,7 +69,17 @@ int main() {
     /* shmdt(): odłącza shm od procesu*/
     if (shmdt(stan) == -1) warn_errno("shmdt");
 
-    /* semget(): tworzy/pobiera zestaw semaforów*/
+/*
+ * Liczba semaforów:
+ *  - SEM_SHM (0): wspólne liczniki/flag w SharedState,
+ *  - SEM_KASY (1): operacje na kolejkach i aktywności kas,
+ *  - SEM_SEKTOR_START..: po jednym na sektor (bramki + agresor),
+ *  - SEM_KIEROWNIK: wybór master-kierownika.
+ *
+ * n_sem = 3 + LICZBA_SEKTOROW => 2 globalne + 8 sektorów + 1 master.
+ */
+
+    /* semget(): tworzy zestaw semaforów*/
     int n_sem = 3 + LICZBA_SEKTOROW;
     int semid = semget(KEY_SEM, n_sem, IPC_CREAT | 0600);
     if (semid == -1) {

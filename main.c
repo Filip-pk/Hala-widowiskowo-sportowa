@@ -2,6 +2,21 @@
 #include <sys/wait.h>
 
 #define MAX_PROC K
+/*
+ * Zadaniem pliku jest:
+ *  1) podpiąć IPC (shm/sem/msg) utworzone wcześniej przez ./setup,
+ *  2) uruchomić procesy: kierownik, pracownicy sektorów, kasjerzy,
+ *  3) generować procesy kibiców w sposób kontrolowany (limit MAX_PROC),
+ *  4) na końcu zebrać wszystkie dzieci i dopisać podsumowanie do raportu.
+ *
+ * Dlaczego limit MAX_PROC + waitpid(WNOHANG)?
+ *  - Kibiców jest dużo a generator robi K*1.5 prób,
+ *  - gdyby odpalić wszystkich naraz, system dostałby burst tysięcy procesów,
+ *    a semafory/kolejki nie miałyby sensu (wszystko w tym samym momencie).
+ *  - dlatego main dba o to, by maksymalnie K procesów dzieci było aktywnych
+ *    jednocześnie, a zakończone procesy są zbierane (żeby nie robić zombie).
+ */
+
 
 int main() {
     setbuf(stdout, NULL);
@@ -33,6 +48,19 @@ int main() {
 
     printf("--- START SYMULACJI ---\n");
     fflush(stdout);
+
+/*
+ * ======================
+ * URUCHAMIANIE PROCESÓW
+ * ======================
+ * Każdy element symulacji jest osobnym procesem:
+ *  - kierownik: steruje sygnałami 1/2/3 i (jako master) zegarem meczu,
+ *  - pracownik(sektor): wykonuje blokadę/odblokowanie i ewakuację sektora,
+ *  - kasjer(kasa): obsługuje kolejki, sprzedaje bilety,
+ *  - kibic: klient kas + próba wejścia przez bramki + zachowania (agresja).
+ *
+ * Cel: realistyczny równoległy dostęp do wspólnego stanu -> shm + semafory.
+ */
 
     /* Start procesu kierownika. */
     /* fork(): tworzy proces*/
@@ -71,6 +99,21 @@ int main() {
             die_errno("execl(kasjer)");
         }
     }
+
+/*
+ * =================
+ * GENERATOR KIBICÓW
+ * =================
+ * Tworzymy więcej „prób” niż miejsc (K * 1.5), bo
+ * chcemy, żeby system kas i bramek miał realne obciążenie.
+ *
+ * VIP:
+ *  - limit max_vip ~ 0.3% K,
+ *  - VIP jest losowany
+ *
+ * Raca:
+ *  - ~0.5% kibiców ma racę (has_raca=1) -> kontrola przy wejściu wyrzuca.
+ */
 
     /* Generator kibiców*/
     int total_kibicow = (int)(K * 1.5);
