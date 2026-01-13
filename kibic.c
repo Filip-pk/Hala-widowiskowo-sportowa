@@ -208,20 +208,12 @@ int main(int argc, char *argv[]) {
     /*Oczekiwanie na bilet*/
     MsgBilet bilet;
     while (1) {
-        if (stan->ewakuacja_trwa) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
-        if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
-
         long my_ticket_type = MSGTYPE_TICKET_BASE + my_id;
 
         /* msgrcv(): odbiera odpowiedź-bilet z kolejki*/
-        ssize_t r = msgrcv(msgid, &bilet, sizeof(int), my_ticket_type, IPC_NOWAIT);
+        ssize_t r = msgrcv(msgid, &bilet, sizeof(int), my_ticket_type, 0);
         if (r >= 0) break;
 
-        if (errno == ENOMSG) {
-            if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
-            usleep(50000);
-            continue;
-        }
         if (errno == EINTR) continue;
         if (errno == EIDRM || errno == EINVAL) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
@@ -269,7 +261,7 @@ int main(int argc, char *argv[]) {
         fflush(stdout);
 
         obecni_inc(stan, semid, SEKTOR_VIP);
-        while (!stan->ewakuacja_trwa) usleep(200000);
+        sem_op(semid, SEM_EWAKUACJA, 0);
         obecni_dec(stan, semid, SEKTOR_VIP);
 
         if (shmdt(stan) == -1) warn_errno("shmdt");
@@ -302,8 +294,8 @@ int main(int argc, char *argv[]) {
     while (1) {
         if (stan->ewakuacja_trwa) break;
 
-        /* Kierownik może zablokować sektor*/
-        if (stan->blokada_sektora[sektor]) { usleep(200000); continue; }
+        sem_op(semid, SEM_SEKTOR_BLOCK_START + sektor, 0);
+        if (stan->ewakuacja_trwa) break;
 
         /* Semafor sektora: chroni stan bramek + agresor_sektora */
         sem_op(semid, sem_sektora, -1);
@@ -456,7 +448,7 @@ int main(int argc, char *argv[]) {
 
     if (wszedl_do_sektora) {
         obecni_inc(stan, semid, sektor);
-        while (!stan->ewakuacja_trwa) usleep(200000);
+        sem_op(semid, SEM_EWAKUACJA, 0);
         obecni_dec(stan, semid, sektor);
     }
 

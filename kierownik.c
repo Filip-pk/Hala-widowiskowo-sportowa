@@ -22,6 +22,12 @@
  *  - uruchamia ewakuację, wysyła polecenia do pracowników i zbiera raporty
 */
 
+union semun {
+    int val;
+    struct semid_ds *buf;
+    unsigned short *array;
+};
+
 #define MSGTYPE_KIEROWNIK_CTRL 5000
 
 static int read_int_line(const char *prompt, int *out) {
@@ -77,7 +83,36 @@ static void send_to_master(int msgid, int cmd, int sektor) {
     }
 }
 
-static void ewakuacja(int msgid, SharedState *stan) {
+static void send_ticket(int msgid, int kibic_id, int sektor) {
+    MsgBilet msg;
+    msg.mtype = MSGTYPE_TICKET_BASE + kibic_id;
+    msg.sektor_id = sektor;
+
+    while (msgsnd(msgid, &msg, sizeof(int), 0) == -1) {
+        if (errno == EINTR) continue;
+        if (errno == EIDRM || errno == EINVAL) return;
+        warn_errno("msgsnd(send_ticket@kierownik)");
+        return;
+    }
+}
+
+static void cancel_queue_type(int msgid, long req_type) {
+    MsgKolejka req;
+    while (1) {
+        ssize_t r = msgrcv(msgid, &req, sizeof(int), req_type, IPC_NOWAIT);
+        if (r >= 0) {
+            send_ticket(msgid, req.kibic_id, -1);
+            continue;
+        }
+        if (errno == ENOMSG) break;
+        if (errno == EINTR) continue;
+        if (errno == EIDRM || errno == EINVAL) break;
+        warn_errno("msgrcv(cancel_queue_type@kierownik)");
+        break;
+    }
+}
+
+static void ewakuacja(int msgid, int semid, SharedState *stan) {
 /*
  * =====================
  * EWAKUACJA
@@ -101,11 +136,20 @@ static void ewakuacja(int msgid, SharedState *stan) {
     stan->status_meczu = 2;
     stan->czas_pozostaly = 0;
 
-    /* Wysyłamy do każdego pracownika sektora sygnał 3 = ewakuacja*/
+    union semun a;
+    a.val = 0;
+    (void)semctl(semid, SEM_EWAKUACJA, SETVAL, a);
+
+    for (int i = 0; i < LICZBA_SEKTOROW; i++) {
+        a.val = 0;
+        (void)semctl(semid, SEM_SEKTOR_BLOCK_START + i, SETVAL, a);
+    }
+
+    cancel_queue_type(msgid, MSGTYPE_VIP_REQ);
+    cancel_queue_type(msgid, MSGTYPE_STD_REQ);
+
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
         MsgSterujacy msg = {10 + i, 3, i};
-
-        /* msgsnd(): wysyła komunikat do kolejki*/
         if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
             if (errno == EIDRM || errno == EINVAL) return;
             warn_errno("msgsnd(ewakuacja)");
@@ -119,8 +163,6 @@ static void ewakuacja(int msgid, SharedState *stan) {
     int raporty = 0;
     while (raporty < LICZBA_SEKTOROW) {
         MsgSterujacy rap;
-
-        /* msgrcv(): odbiera komunikat z kolejki*/
         ssize_t res = msgrcv(msgid, &rap, sizeof(int) * 2, 99, 0);
         if (res >= 0) {
             printf("[RAPORT] Sektor %d pusty\n", rap.sektor_id);
@@ -134,7 +176,6 @@ static void ewakuacja(int msgid, SharedState *stan) {
         }
     }
 
-    /* Zerowanie sektora VIP*/
     while (stan->obecni_w_sektorze[SEKTOR_VIP] > 0) {
         usleep(100000);
     }
@@ -186,7 +227,6 @@ static pid_t start_clock_process(SharedState *stan) {
     exit(0);
 }
 
-static int handle_cmd_master(int msgid, SharedState *stan, pid_t *zegar_pid, int cmd, int sektor) {
 /*
  * ==========================
  * OBSŁUGA SYGNAŁÓW 1/2/3
@@ -205,6 +245,7 @@ static int handle_cmd_master(int msgid, SharedState *stan, pid_t *zegar_pid, int
  */
 
     /* Sygnał 3: natychmiastowa ewakuacja zatrzymujemy zegar*/
+static int handle_cmd_master(int msgid, int semid, SharedState *stan, pid_t *zegar_pid, int cmd, int sektor) {
     if (cmd == 3) {
         if (*zegar_pid > 0) {
             /* kill(): wysyła sygnał SIGTERM do procesu zegara*/
@@ -215,7 +256,7 @@ static int handle_cmd_master(int msgid, SharedState *stan, pid_t *zegar_pid, int
             *zegar_pid = -1;
         }
 
-        ewakuacja(msgid, stan);
+        ewakuacja(msgid, semid, stan);
         return 1; /* koniec */
     }
 
@@ -342,7 +383,7 @@ int main() {
         if (zegar_pid > 0) {
             while (1) {
                 pid_t w = waitpid(zegar_pid, NULL, WNOHANG);
-                if (w > 0) { ewakuacja(msgid, stan); goto out; }
+                if (w > 0) { ewakuacja(msgid, semid, stan); goto out; }
                 if (w == 0) break;
                 if (errno == EINTR) continue;
                 warn_errno("waitpid(WNOHANG)");
@@ -353,11 +394,10 @@ int main() {
         /* Odbiór komend od kontrolerów (nie blokuj) */
         while (1) {
             MsgSterujacy c;
-
             /* msgrcv(): odbiera komunikat z kolejki*/
             ssize_t r = msgrcv(msgid, &c, sizeof(int) * 2, MSGTYPE_KIEROWNIK_CTRL, IPC_NOWAIT);
             if (r >= 0) {
-                if (handle_cmd_master(msgid, stan, &zegar_pid, c.typ_sygnalu, c.sektor_id)) goto out;
+                if (handle_cmd_master(msgid, semid, stan, &zegar_pid, c.typ_sygnalu, c.sektor_id)) goto out;
                 continue;
             }
 
@@ -392,7 +432,7 @@ int main() {
             }
 
             if (cmd == 3) {
-                if (handle_cmd_master(msgid, stan, &zegar_pid, 3, -1)) break;
+                if (handle_cmd_master(msgid, semid, stan, &zegar_pid, 3, -1)) break;
                 continue;
             }
 
@@ -406,7 +446,7 @@ int main() {
                     continue;
                 }
 
-                if (handle_cmd_master(msgid, stan, &zegar_pid, cmd, s)) break;
+                if (handle_cmd_master(msgid, semid, stan, &zegar_pid, cmd, s)) break;
                 continue;
             }
 
@@ -419,8 +459,8 @@ out:
     /* shmdt(): odłącza shm od procesu kierownika*/
     if (shmdt(stan) == -1) warn_errno("shmdt");
 
-    /* Na wszelki wypadek dobijam zegar jeśli jeszcze żyje*/
-    /* kill(): wysyła sygnał do procesu*/
+    /* Na wszelki wypadek dobijam zegar jeśli jeszcze żyje
+    kill(): wysyła sygnał do procesu*/
     if (zegar_pid > 0) {
         if (kill(zegar_pid, SIGTERM) == -1 && errno != ESRCH) warn_errno("kill(zegar)");
 

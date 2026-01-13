@@ -1,5 +1,11 @@
 #include "common.h"
 
+union semun {
+    int val;
+    struct semid_ds *buf;
+    unsigned short *array;
+};
+
 /*
  * ==========================
  * PRACOWNIK SEKTORA
@@ -85,11 +91,17 @@ int main(int argc, char *argv[]) {
          */
         if (msg.typ_sygnalu == 1) {
             stan->blokada_sektora[sektor] = 1;
+            /* semafor-zdarzenie: 1 = zablokowany */
+            union semun a; a.val = 1;
+            (void)semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a);
             printf("[TECH %d] Sygnał 1 (BLOKADA)\n", sektor);
             fflush(stdout);
 
         } else if (msg.typ_sygnalu == 2) {
             stan->blokada_sektora[sektor] = 0;
+            /* semafor-zdarzenie: 0 = odblokowany */
+            union semun a; a.val = 0;
+            (void)semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a);
             printf("[TECH %d] Sygnał 2 (ODBLOKOWANIE)\n", sektor);
             fflush(stdout);
 
@@ -106,8 +118,11 @@ int main(int argc, char *argv[]) {
  * a kierownik kończy symulację dopiero po zebraniu 8 raportów.
  */
 
-            /* W ewakuacji blokujemy sektor i czekamy aż wszyscy znikną*/
+            /* W ewakuacji blokujemy sektor w shm, ale semafor zdarzenia zostawiamy OTWARTY (0),
+               żeby nikt nie utknął na czekaniu na odblokowanie. */
             stan->blokada_sektora[sektor] = 1;
+            union semun a; a.val = 0;
+            (void)semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a);
 
             int sem_sektora = SEM_SEKTOR_START + sektor;
 

@@ -80,7 +80,7 @@ int main() {
  */
 
     /* semget(): tworzy zestaw semaforów*/
-    int n_sem = 3 + LICZBA_SEKTOROW;
+    int n_sem = N_SEM;
     int semid = semget(KEY_SEM, n_sem, IPC_CREAT | 0600);
     if (semid == -1) {
         warn_errno("semget");
@@ -89,10 +89,19 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    /* semctl(SETVAL): ustawiam każdy semafor na 1*/
+    /* semctl(SETVAL): inicjalizacja semaforów
+     *  - mutexy startują od 1
+     *  - SEM_EWAKUACJA startuje od 1 (czekamy aż spadnie do 0)
+     *  - SEM_SEKTOR_BLOCK_START startują od 0 (sektory otwarte)
+     */
     union semun arg;
-    arg.val = 1;
     for (int i = 0; i < n_sem; i++) {
+        int v = 1;
+        if (i >= SEM_SEKTOR_BLOCK_START && i < SEM_SEKTOR_BLOCK_START + LICZBA_SEKTOROW) {
+            v = 0; /* sektory otwarte */
+        }
+        /* SEM_EWAKUACJA = 1 (domyślnie) */
+        arg.val = v;
         if (semctl(semid, i, SETVAL, arg) == -1) {
             warn_errno("semctl(SETVAL)");
             /* shmctl(IPC_RMID): usuwa segment shm: sprzątanie po błędzie*/

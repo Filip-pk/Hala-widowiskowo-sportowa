@@ -57,7 +57,7 @@ static inline void die_errno(const char *ctx) {
  * ========================= */
 
 /* K – liczba kibicow. */
-#define K 2000
+#define K 10000
 
 /* Sektory standardowe*/
 #define LICZBA_SEKTOROW 8
@@ -75,10 +75,10 @@ static inline void die_errno(const char *ctx) {
 #define LIMIT_CIERPLIWOSCI 5
 
 /* Czas do rozpoczęcia meczu w sekundach*/
-#define CZAS_PRZED_MECZEM 10
+#define CZAS_PRZED_MECZEM 5
 
 /* Czas trwania meczu w sekundach*/
-#define CZAS_MECZU 200
+#define CZAS_MECZU 15
 
 /* =========================
  * Klucze IPC
@@ -176,16 +176,34 @@ typedef struct {
 #define DYN_ID_START 50000
 
 /* =========================
- * Semafory
+ * Semafory (System V)
  * =========================
- *  - SEM_SHM: ochrona dostępu do SharedState
- *  - SEM_KASY: koordynacja kas
- *  - SEM_SEKTOR_START..: semafory per-sektor
+ * MUTEXY:
+ *  - SEM_SHM:  ochrona dostępu do SharedState
+ *  - SEM_KASY: operacje na kolejkach i aktywności kas
+ *  - SEM_SEKTOR_START: mutex per sektor (bramki + agresor)
+ *  - SEM_KIEROWNIK: wybór master-kierownika
+ *
+ * ZDARZENIA:
+ *  - SEM_EWAKUACJA: start=1, przy ewakuacji ustawiane na 0.
+ *      Kibice czekają semop(op=0) aż semval==0.
+ *  - SEM_SEKTOR_BLOCK_START..: start=0 (sektor otwarty).
+ *      Pracownik ustawia 1 (blokada) / 0 (odblokowanie),
+ *      a kibice czekają semop(op=0) aż będzie 0.
  */
 #define SEM_SHM 0
 #define SEM_KASY 1
 #define SEM_SEKTOR_START 2
 #define SEM_KIEROWNIK (SEM_SEKTOR_START + LICZBA_SEKTOROW)
+
+/* Zdarzenie: ewakuacja (semval==0 => ewakuacja trwa / wszyscy wychodzą)*/
+#define SEM_EWAKUACJA (SEM_KIEROWNIK + 1)
+
+/* Zdarzenia: blokady sektorów (semval==0 => sektor otwarty)*/
+#define SEM_SEKTOR_BLOCK_START (SEM_EWAKUACJA + 1)
+
+/* Łączna liczba semaforów w zestawie*/
+#define N_SEM (SEM_SEKTOR_BLOCK_START + LICZBA_SEKTOROW)
 
 /* =========================
  * Kolory ANSI do logów
