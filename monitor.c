@@ -106,6 +106,9 @@ int main() {
             if (n1 > 0) sprintf(s1, "[%d:%d]", n1, d1); else sprintf(s1, "[ . ]");
 
             printf("SEKTOR %d: %-10s | %-10s ", i, s0, s1);
+            printf("| wejścia %sGOSP%s:%d %sGOSC%s:%d ",
+                   CLR_DBLUE, CLR_RESET, stan->wejscia_kontrola[i][0],
+                   CLR_PURPLE, CLR_RESET, stan->wejscia_kontrola[i][1]);
             if (stan->blokada_sektora[i]) printf("[BLOKADA]");
             if (stan->agresor_sektora[i] != 0) printf("[AGRESOR:%d]", stan->agresor_sektora[i]);
             printf("\n");

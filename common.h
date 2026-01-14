@@ -78,7 +78,7 @@ static inline void die_errno(const char *ctx) {
 #define CZAS_PRZED_MECZEM 5
 
 /* Czas trwania meczu w sekundach*/
-#define CZAS_MECZU 15
+#define CZAS_MECZU 35
 
 /* =========================
  * Klucze IPC
@@ -114,6 +114,9 @@ typedef struct {
 
     /* 2 bramki dla kazdego sektora*/
     Stanowisko bramki[LICZBA_SEKTOROW][2];
+
+    /*Licznik wejść na kontrolę*/
+    int wejscia_kontrola[LICZBA_SEKTOROW][2];
 
     /* Ile osób aktualnie przebywa w sektorze*/
     int obecni_w_sektorze[LICZBA_SEKTOROW + 1];

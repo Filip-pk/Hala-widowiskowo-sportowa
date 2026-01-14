@@ -242,20 +242,10 @@ int main(int argc, char *argv[]) {
  * ==========
  * ŚCIEŻKA VIP
  * ==========
- * VIP omija bramki (nie ma konfliktu drużyn, nie ma limitu 3/stanowisko),
- * ale nadal jest kontrola bezpieczeństwa:
- *  - jeśli ma_race=1 -> natychmiastowe wyproszenie.
+ * VIP omija bramki (osobne wejście), nie przechodzi kontroli bezpieczeństwa.
  */
 
     if (sektor == SEKTOR_VIP) {
-        if (ma_race) {
-            printf(CLR_RED "[KONTROLA VIP] WYKRYTO KIBICA %d Z RACĄ — WYPROSZONY!" CLR_RESET "\n", my_id);
-            fflush(stdout);
-            if (shmdt(stan) == -1) warn_errno("shmdt");
-            kill(getpid(), SIGKILL);
-            _exit(137);
-        }
-
         bump_entered(stan, semid, wiek, is_kolega);
         printf(CLR_YELLOW "[VIP %d] WEJŚCIE VIP" CLR_RESET "\n", my_id);
         fflush(stdout);
@@ -285,8 +275,15 @@ int main(int argc, char *argv[]) {
  */
 
     int sem_sektora = SEM_SEKTOR_START + sektor;
-    int cierpliwosc = 0;
     int wszedl_do_sektora = 0;
+
+    /*
+     * Liczenie "przepuszczonych":
+     * dopiero gdy blokuje nas inna drużyna (konflikt w bramkach), zaczynamy liczyć
+     * ilu kibiców przeciwnej drużyny weszło na kontrolę przed nami.
+     */
+    int konflikt_trwa = 0;
+    int start_opp_wejscia = 0;
 
     int tryb_agresora = 0;     /* po przekroczeniu cierpliwości */
     int agresja_ogloszona = 0;
@@ -334,6 +331,7 @@ int main(int argc, char *argv[]) {
 
             stan->bramki[sektor][0].zajetosc++;
             stan->bramki[sektor][0].druzyna = druzyna;
+            stan->wejscia_kontrola[sektor][druzyna]++;
 
             stan->agresor_sektora[sektor] = 0; /* odblokuj wejście kolejnym */
 
@@ -377,6 +375,7 @@ int main(int argc, char *argv[]) {
 
             stan->bramki[sektor][wybrane].zajetosc++;
             stan->bramki[sektor][wybrane].druzyna = druzyna;
+            stan->wejscia_kontrola[sektor][druzyna]++;
 
             const char *tc = team_color(druzyna);
             const char *tn = team_name(druzyna);
@@ -408,35 +407,35 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        /* Nie udało się wejść — próbuj później*/
-        sem_op(semid, sem_sektora, 1);
-
-/*
- * =============================
- * AGRESJA
- * =============================
- * Gdy kibic długo nie może wejść (LIMIT_CIERPLIWOSCI prób),
- * włącza tryb agresora:
- *  - zwiększamy licznik cnt_agresja (statystyka),
- *  - rezerwujemy sektor przez agresor_sektora[sektor] = my_id,
- *  - czekamy aż obie bramki będą puste,
- *  - wchodzimy jako pierwsi i zwalniamy rezerwację.
- *
- * To modeluje sytuację „ktoś się przepycha” i chwilowo blokuje innych.
- */
-
-        cierpliwosc++;
-        if (cierpliwosc >= LIMIT_CIERPLIWOSCI) {
-            if (!agresja_ogloszona) {
-                bump_agresja(stan, semid);
-                printf(CLR_RED "[AGRESJA] KIBIC %d (DR %d) POD SEKTOREM %d — BIERZE PRIORYTET!" CLR_RESET "\n",
-                       my_id, druzyna, sektor);
-                fflush(stdout);
-                agresja_ogloszona = 1;
+        /*
+         * Nie udało się wejść:
+         *  - jeśli powodem jest konflikt drużyny, liczymy "przepuszczonych" jako
+         *    wejścia przeciwnej drużyny na kontrolę od momentu konfliktu.
+         */
+        if (powod == 1) {
+            int opp = 1 - druzyna;
+            if (!konflikt_trwa) {
+                konflikt_trwa = 1;
+                start_opp_wejscia = stan->wejscia_kontrola[sektor][opp];
             }
-            tryb_agresora = 1;
+
+            int przepuszczone = stan->wejscia_kontrola[sektor][opp] - start_opp_wejscia;
+            if (przepuszczone >= LIMIT_CIERPLIWOSCI) {
+                if (!agresja_ogloszona) {
+                    bump_agresja(stan, semid);
+                    printf(CLR_RED "[AGRESJA] KIBIC %d (DR %d) POD SEKTOREM %d — PRZEPUŚCIŁ %d WROGÓW, BIERZE PRIORYTET!" CLR_RESET "\n",
+                           my_id, druzyna, sektor, przepuszczone);
+                    fflush(stdout);
+                    agresja_ogloszona = 1;
+                }
+                tryb_agresora = 1;
+            }
+        } else {
+            konflikt_trwa = 0;
         }
 
+        /* puść mutex sektora dopiero po obliczeniach */
+        sem_op(semid, sem_sektora, 1);
         usleep(100000);
     }
 
