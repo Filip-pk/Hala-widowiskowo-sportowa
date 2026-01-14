@@ -93,7 +93,10 @@ int main(int argc, char *argv[]) {
             stan->blokada_sektora[sektor] = 1;
             /* semafor-zdarzenie: 1 = zablokowany */
             union semun a; a.val = 1;
-            (void)semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a);
+            if (semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a) == -1) {
+                if (errno == EIDRM || errno == EINVAL) break;
+                warn_errno("semctl");
+            }
             printf("[TECH %d] Sygnał 1 (BLOKADA)\n", sektor);
             fflush(stdout);
 
@@ -101,7 +104,10 @@ int main(int argc, char *argv[]) {
             stan->blokada_sektora[sektor] = 0;
             /* semafor-zdarzenie: 0 = odblokowany */
             union semun a; a.val = 0;
-            (void)semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a);
+            if (semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a) == -1) {
+                if (errno == EIDRM || errno == EINVAL) break;
+                warn_errno("semctl");
+            }
             printf("[TECH %d] Sygnał 2 (ODBLOKOWANIE)\n", sektor);
             fflush(stdout);
 
@@ -122,7 +128,10 @@ int main(int argc, char *argv[]) {
                żeby nikt nie utknął na czekaniu na odblokowanie. */
             stan->blokada_sektora[sektor] = 1;
             union semun a; a.val = 0;
-            (void)semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a);
+            if (semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a) == -1) {
+                if (errno == EIDRM || errno == EINVAL) break;
+                warn_errno("semctl");
+            }
 
             int sem_sektora = SEM_SEKTOR_START + sektor;
 

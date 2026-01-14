@@ -35,7 +35,10 @@ int main() {
 
     /* Tworze plik raportu*/
     FILE *rf = fopen("raport.txt", "w");
-    if (rf) {
+    if (!rf) {
+        /* fopen() ustawia errno -> wymaganie: perror()+errno */
+        warn_errno("fopen(raport.txt)");
+    } else {
         fprintf(rf, "id typ sektor\n");
         fclose(rf);
     }

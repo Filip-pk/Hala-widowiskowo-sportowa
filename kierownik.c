@@ -138,11 +138,17 @@ static void ewakuacja(int msgid, int semid, SharedState *stan) {
 
     union semun a;
     a.val = 0;
-    (void)semctl(semid, SEM_EWAKUACJA, SETVAL, a);
+    if (semctl(semid, SEM_EWAKUACJA, SETVAL, a) == -1) {
+        if (errno == EIDRM || errno == EINVAL) return;
+        warn_errno("semctl");
+    }
 
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
         a.val = 0;
-        (void)semctl(semid, SEM_SEKTOR_BLOCK_START + i, SETVAL, a);
+        if (semctl(semid, SEM_SEKTOR_BLOCK_START + i, SETVAL, a) == -1) {
+            if (errno == EIDRM || errno == EINVAL) return;
+            warn_errno("semctl");
+        }
     }
 
     cancel_queue_type(msgid, MSGTYPE_VIP_REQ);

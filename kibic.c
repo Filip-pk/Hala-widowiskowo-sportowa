@@ -10,7 +10,7 @@
  *  1) (opcjonalnie) ustawienie się w kolejce do kas i wysłanie żądania (msg),
  *  2) odebranie biletu (msg) i zapis do raportu (plik + flock),
  *  3) wejście na stadion:
- *      - VIP: bez bramek, ale z kontrolą racy,
+ *      - VIP: bez bramek,
  *      - standard: przez 2 bramki w sektorze + limit osób + brak mieszania drużyn,
  *  4) siedzenie w sektorze (licznik obecnych w shm),
  *  5) wyjście przy ewakuacji (stan->ewakuacja_trwa).
@@ -193,17 +193,6 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
     }
-
-/*
- * ======================
- * OCZEKIWANIE NA BILET
- * ======================
- * Odbieramy bilet nieblokująco (IPC_NOWAIT), żeby móc przerwać oczekiwanie gdy:
- *  - ruszy ewakuacja,
- *  - sprzedaż się zakończy (sprzedaz_zakonczona).
- *
- * Dzięki temu kibic nie wisi na msgrcv().
- */
 
     /*Oczekiwanie na bilet*/
     MsgBilet bilet;
