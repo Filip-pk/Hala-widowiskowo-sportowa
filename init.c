@@ -118,7 +118,20 @@ int main() {
     /* msgget(): tworzy/pobiera kolejkę komunikatów*/
     int msgid = msgget(KEY_MSG, IPC_CREAT | 0600);
     if (msgid == -1) {
-        warn_errno("msgget");
+        warn_errno("msgget(req)");
+        if (shmctl(shmid, IPC_RMID, NULL) == -1) warn_errno("shmctl(IPC_RMID)");
+        if (semctl(semid, 0, IPC_RMID) == -1) warn_errno("semctl(IPC_RMID)");
+        exit(EXIT_FAILURE);
+    }
+
+    /* Druga kolejka: bilety (odpowiedzi kasjer -> kibic).
+     * Dzięki temu kasjer nie zablokuje się na msgsnd(), gdy kolejka żądań
+     * jest zapchana.
+     */
+    int msgid_ticket = msgget(KEY_MSG_TICKET, IPC_CREAT | 0600);
+    if (msgid_ticket == -1) {
+        warn_errno("msgget(ticket)");
+        if (msgctl(msgid, IPC_RMID, NULL) == -1) warn_errno("msgctl(IPC_RMID)");
         if (shmctl(shmid, IPC_RMID, NULL) == -1) warn_errno("shmctl(IPC_RMID)");
         if (semctl(semid, 0, IPC_RMID) == -1) warn_errno("semctl(IPC_RMID)");
         exit(EXIT_FAILURE);

@@ -36,12 +36,12 @@ static void sem_op(int semid, int idx, int op) {
  * Wysyła bilet do konkretnego kibica.
  * msgsnd(): wysyła wiadomość do kolejki komunikatów.
  */
-static void send_ticket(int msgid, int kibic_id, int sektor) {
+static void send_ticket(int msgid_ticket, int kibic_id, int sektor) {
     MsgBilet msg;
     msg.mtype = MSGTYPE_TICKET_BASE + kibic_id;
     msg.sektor_id = sektor;
 
-    while (msgsnd(msgid, &msg, sizeof(int), 0) == -1) {
+    while (msgsnd(msgid_ticket, &msg, sizeof(int), 0) == -1) {
         if (errno == EINTR) continue;
         if (errno == EIDRM || errno == EINVAL) return; // kolejka skasowana
         warn_errno("msgsnd(send_ticket)");
@@ -90,12 +90,12 @@ static void spawn_friend_kibic(int friend_id) {
  * Czyści kolejkę danego typu
  * msgrcv(): odbiera wiadomość z kolejki
  */
-static void cancel_queue_type(int msgid, long req_type) {
+static void cancel_queue_type(int msgid_req, int msgid_ticket, long req_type) {
     MsgKolejka req;
     while (1) {
-        ssize_t r = msgrcv(msgid, &req, sizeof(int), req_type, IPC_NOWAIT);
+        ssize_t r = msgrcv(msgid_req, &req, sizeof(int), req_type, IPC_NOWAIT);
         if (r >= 0) {
-            send_ticket(msgid, req.kibic_id, -1);
+            send_ticket(msgid_ticket, req.kibic_id, -1);
             continue;
         }
         if (errno == ENOMSG) break;                 // kolejka pusta
@@ -133,9 +133,13 @@ int main(int argc, char *argv[]) {
     int semid = semget(KEY_SEM, 0, 0600);
     if (semid == -1) die_errno("semget");
 
-    /* msgget(): pobiera istniejącą kolejkę komunikatów*/
-    int msgid = msgget(KEY_MSG, 0600);
-    if (msgid == -1) die_errno("msgget");
+    /* msgget(): pobiera kolejkę żądań (kibic -> kasjer) */
+    int msgid_req = msgget(KEY_MSG, 0600);
+    if (msgid_req == -1) die_errno("msgget(req)");
+
+    /* msgget(): pobiera kolejkę biletów (kasjer -> kibic) */
+    int msgid_ticket = msgget(KEY_MSG_TICKET, 0600);
+    if (msgid_ticket == -1) die_errno("msgget(ticket)");
 
     /* shmat(): mapuje shm do pamięci procesu*/
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
@@ -159,7 +163,7 @@ int main(int argc, char *argv[]) {
 
         /* Jeśli ta kasa jest wyłączona, kasjer “śpi" i tylko sprawdza stan*/
         if (stan->aktywne_kasy[id] == 0) {
-            usleep(100000);
+            usleep(10000);
             continue;
         }
 
@@ -235,7 +239,7 @@ int main(int argc, char *argv[]) {
         /* Priorytet: VIP zawsze pierwszy*/
         if (q_vip > 0) {
             /* msgrcv(): pobiera żądanie VIP bez blokowania*/
-            ssize_t r = msgrcv(msgid, &req, sizeof(int), MSGTYPE_VIP_REQ, IPC_NOWAIT);
+            ssize_t r = msgrcv(msgid_req, &req, sizeof(int), MSGTYPE_VIP_REQ, IPC_NOWAIT);
             if (r != -1) {
                 klient_typ = 1;
                 kibic_id = req.kibic_id;
@@ -252,7 +256,7 @@ int main(int argc, char *argv[]) {
 
         if (!klient_typ && !stan->standard_sold_out && q_std > 0) {
             /* msgrcv(): pobiera żądanie standard bez blokowania*/
-            ssize_t r = msgrcv(msgid, &req, sizeof(int), MSGTYPE_STD_REQ, IPC_NOWAIT);
+            ssize_t r = msgrcv(msgid_req, &req, sizeof(int), MSGTYPE_STD_REQ, IPC_NOWAIT);
             if (r != -1) {
                 klient_typ = 2;
                 kibic_id = req.kibic_id;
@@ -266,14 +270,14 @@ int main(int argc, char *argv[]) {
         }
 
         if (!klient_typ) {
-            usleep(50000);
+            usleep(5000);
             continue;
         }
 
         if (stan->ewakuacja_trwa) break;
         if (stan->sprzedaz_zakonczona) break;
 
-        usleep(100000);
+        usleep(10000);
 
         if (klient_typ == 1) {
             int sektor = -1;
@@ -295,9 +299,6 @@ int main(int argc, char *argv[]) {
                 printf(CLR_YELLOW "[SYSTEM] WSZYSTKIE BILETY WYPRZEDANE - koniec sprzedaży." CLR_RESET "\n");
                 fflush(stdout);
             }
-
-            send_ticket(msgid, kibic_id, sektor);
-
 /*
  * ===========================
  * SOLD OUT i czyszczenie kolejek
@@ -313,6 +314,7 @@ int main(int argc, char *argv[]) {
  *    odbieramy każde oczekujące żądanie i odsyłamy bilet -1.
  *    Dzięki temu kibice nie wiszą w nieskończoność.
  */
+            send_ticket(msgid_ticket, kibic_id, sektor);
 
             /* Jeśli koniec sprzedaży: wyłączamy kasy i czyścimy kolejki*/
             if (stan->sprzedaz_zakonczona) {
@@ -322,8 +324,8 @@ int main(int argc, char *argv[]) {
                 for (int i = 0; i < LICZBA_KAS; i++) stan->aktywne_kasy[i] = 0;
                 sem_op(semid, SEM_KASY, 1);
 
-                cancel_queue_type(msgid, MSGTYPE_VIP_REQ);
-                cancel_queue_type(msgid, MSGTYPE_STD_REQ);
+                cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_VIP_REQ);
+                cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_STD_REQ);
                 break;
             }
             continue;
@@ -373,7 +375,7 @@ int main(int argc, char *argv[]) {
                     stan->kolejka_zwykla = 0;
                     sem_op(semid, SEM_KASY, 1);
 
-                    cancel_queue_type(msgid, MSGTYPE_STD_REQ);
+                    cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_STD_REQ);
                 }
 
                 if (ile == 2) {
@@ -414,13 +416,13 @@ int main(int argc, char *argv[]) {
                 fflush(stdout);
             }
 
-            send_ticket(msgid, kibic_id, -1);
+            send_ticket(msgid_ticket, kibic_id, -1);
 
             if (set_standard) {
                 sem_op(semid, SEM_KASY, -1);
                 stan->kolejka_zwykla = 0;
                 sem_op(semid, SEM_KASY, 1);
-                cancel_queue_type(msgid, MSGTYPE_STD_REQ);
+                cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_STD_REQ);
             }
 
             if (set_all) {
@@ -430,8 +432,8 @@ int main(int argc, char *argv[]) {
                 for (int i = 0; i < LICZBA_KAS; i++) stan->aktywne_kasy[i] = 0;
                 sem_op(semid, SEM_KASY, 1);
 
-                cancel_queue_type(msgid, MSGTYPE_VIP_REQ);
-                cancel_queue_type(msgid, MSGTYPE_STD_REQ);
+                cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_VIP_REQ);
+                cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_STD_REQ);
                 break;
             }
 
@@ -440,7 +442,6 @@ int main(int argc, char *argv[]) {
             fflush(stdout);
             continue;
         }
-
 /*
  * =========================
  * 2 BILETY -> KOLEGA
@@ -460,9 +461,9 @@ int main(int argc, char *argv[]) {
             spawn_friend_kibic(friend_id);
         }
 
-        send_ticket(msgid, kibic_id, sektor);
+        send_ticket(msgid_ticket, kibic_id, sektor);
         if (friend_id != -1 && ile_sprzedane == 2) {
-            send_ticket(msgid, friend_id, sektor);
+            send_ticket(msgid_ticket, friend_id, sektor);
         }
     }
 

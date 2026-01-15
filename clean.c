@@ -29,6 +29,12 @@ int main() {
         if (msgctl(msgid, IPC_RMID, NULL) == -1) warn_errno("msgctl(IPC_RMID)");
     } else if (errno != ENOENT) warn_errno("msgget");
 
+    /* Druga kolejka: bilety (kasjer -> kibic) */
+    int msgid_ticket = msgget(KEY_MSG_TICKET, 0600);
+    if (msgid_ticket != -1) {
+        if (msgctl(msgid_ticket, IPC_RMID, NULL) == -1) warn_errno("msgctl(IPC_RMID ticket)");
+    } else if (errno != ENOENT) warn_errno("msgget(ticket)");
+
     printf("[OK] Zasoby usunięte.\n");
     return 0;
 }

@@ -37,11 +37,10 @@ static void sem_op(int semid, int idx, int op) {
     }
 }
 
-
 /*=====================
 * DZIECKO + OPIEKUN
 * =====================
-* Opiekun to osobny proces powiązany z dzieckiem. Dziecko nie wykonuje
+* Opiekun to osobny proces powiązany z dzieckiem
 */
 
 typedef struct {
@@ -104,7 +103,7 @@ static void guardian_loop(int rfd, int wfd) {
 
         if (m.code == PAIR_BRAMKA) {
             // Symboliczny "pobyt" w bramce razem z dzieckiem.
-            usleep(300000);
+            usleep(30000);
         }
         if (m.code == PAIR_END) break;
     }
@@ -263,9 +262,7 @@ static void expel_for_flare(SharedState *stan, int semid, int sem_sektora, int s
 
     // Dziecko nie wychodzi samo — opiekun też znika.
     pair_kill_guardian();
-
     kill(getpid(), SIGKILL);
-
     _exit(137);
 }
 
@@ -296,9 +293,15 @@ int main(int argc, char *argv[]) {
     int semid = semget(KEY_SEM, 0, 0600);
     if (semid == -1) { warn_errno("semget"); exit(EXIT_FAILURE); }
 
-    /* msgget(): pobiera kolejkę komunikatów*/
-    int msgid = msgget(KEY_MSG, 0600);
-    if (msgid == -1) { warn_errno("msgget"); exit(EXIT_FAILURE); }
+    /* Kolejka żądań (kibic -> kasjer) */
+    int msgid_req = msgget(KEY_MSG, 0600);
+    if (msgid_req == -1) { warn_errno("msgget(req)"); exit(EXIT_FAILURE); }
+
+    /* Kolejka biletów (kasjer -> kibic). Rozdzielenie request/response
+     * zapobiega zakleszczeniu, gdy kolejka żądań jest zapchana.
+     */
+    int msgid_ticket = msgget(KEY_MSG_TICKET, 0600);
+    if (msgid_ticket == -1) { warn_errno("msgget(ticket)"); exit(EXIT_FAILURE); }
 
     /* shmat(): mapuje shm do pamięci procesu*/
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
@@ -308,7 +311,6 @@ int main(int argc, char *argv[]) {
     if (stan->ewakuacja_trwa) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
     if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
     if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
-
 
     // Dziecko nie porusza się bez opiekuna: uruchamiamy opiekuna jako proces-cień.
     int is_dziecko = (wiek < 15 && !is_vip);
@@ -343,7 +345,7 @@ int main(int argc, char *argv[]) {
         req.kibic_id = my_id;
 
         /* msgsnd(): wysyła żądanie do kolejki komunikatów*/
-        while (msgsnd(msgid, &req, sizeof(int), 0) == -1) {
+        while (msgsnd(msgid_req, &req, sizeof(int), 0) == -1) {
             if (errno == EINTR) continue;
             if (errno == EIDRM || errno == EINVAL) { pair_shutdown(); if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
             warn_errno("msgsnd(kolejka)");
@@ -359,7 +361,7 @@ int main(int argc, char *argv[]) {
         long my_ticket_type = MSGTYPE_TICKET_BASE + my_id;
 
         /* msgrcv(): odbiera odpowiedź-bilet z kolejki*/
-        ssize_t r = msgrcv(msgid, &bilet, sizeof(int), my_ticket_type, 0);
+        ssize_t r = msgrcv(msgid_ticket, &bilet, sizeof(int), my_ticket_type, 0);
         if (r >= 0) break;
 
         if (errno == EINTR) continue;
@@ -435,6 +437,7 @@ int main(int argc, char *argv[]) {
      * dopiero gdy blokuje nas inna drużyna (konflikt w bramkach), zaczynamy liczyć
      * ilu kibiców przeciwnej drużyny weszło na kontrolę przed nami.
      */
+    
     int konflikt_trwa = 0;
     int start_opp_wejscia = 0;
 
@@ -456,7 +459,7 @@ int main(int argc, char *argv[]) {
         }
         if (stan->agresor_sektora[sektor] != 0 && stan->agresor_sektora[sektor] != my_id) {
             sem_op(semid, sem_sektora, 1);
-            usleep(100000);
+            usleep(10000);
             continue;
         }
 
@@ -466,7 +469,7 @@ int main(int argc, char *argv[]) {
 
             if (stan->agresor_sektora[sektor] != my_id) {
                 sem_op(semid, sem_sektora, 1);
-                usleep(100000);
+                usleep(10000);
                 continue;
             }
 
@@ -475,7 +478,7 @@ int main(int argc, char *argv[]) {
 
             if (!(empty0 && empty1)) {
                 sem_op(semid, sem_sektora, 1);
-                usleep(50000);
+                usleep(5000);
                 continue;
             }
 
@@ -499,7 +502,7 @@ int main(int argc, char *argv[]) {
 
             // Dziecko nie może być na bramce samo.
             pair_sync_or_die(PAIR_BRAMKA, sektor, 0);
-            usleep(300000);
+            usleep(30000);
 
             sem_op(semid, sem_sektora, -1);
             if (stan->bramki[sektor][0].zajetosc > 0) stan->bramki[sektor][0].zajetosc--;
@@ -555,7 +558,7 @@ int main(int argc, char *argv[]) {
 
             // Dziecko nie może być na bramce samo.
             pair_sync_or_die(PAIR_BRAMKA, sektor, wybrane);
-            usleep(300000);
+            usleep(30000);
 
             /* Aktualizacja bramki po przejściu*/
             sem_op(semid, sem_sektora, -1);
@@ -595,7 +598,7 @@ int main(int argc, char *argv[]) {
 
         /* puść mutex sektora dopiero po obliczeniach */
         sem_op(semid, sem_sektora, 1);
-        usleep(100000);
+        usleep(10000);
     }
 
     if (tryb_agresora) {

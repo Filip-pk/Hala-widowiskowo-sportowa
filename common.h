@@ -88,6 +88,12 @@ static inline void die_errno(const char *ctx) {
 #define KEY_SEM 5678
 #define KEY_MSG 9012
 
+/* Druga kolejka: wyłącznie odpowiedzi (bilety) kasjer -> kibic.
+ * Rozdzielenie request/response zapobiega zakleszczeniu, gdy kolejka
+ * żądań zapcha się przy bardzo dużej liczbie procesów.
+ */
+#define KEY_MSG_TICKET 9013
+
 /* =========================
  * Struktury danych
  * =========================
