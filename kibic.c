@@ -2,6 +2,11 @@
 
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/wait.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
+
 /*
  * ===================
  * KIBIC
@@ -29,6 +34,149 @@ static void sem_op(int semid, int idx, int op) {
         if (errno == EINTR) continue;
         if (errno == EIDRM || errno == EINVAL) _exit(0);
         die_errno("semop");
+    }
+}
+
+
+/*=====================
+* DZIECKO + OPIEKUN
+* =====================
+* Opiekun to osobny proces powiązany z dzieckiem. Dziecko nie wykonuje
+*/
+
+typedef struct {
+    int code;
+    int a;
+    int b;
+} PairMsg;
+
+enum {
+    PAIR_KASA   = 1,
+    PAIR_TICKET = 2,
+    PAIR_BRAMKA = 3,
+    PAIR_SEKTOR = 4,
+    PAIR_VIP    = 5,
+    PAIR_END    = 99
+};
+
+static int   pair_on = 0;
+static pid_t pair_pid = -1;
+static int   pair_wfd = -1;
+static int   pair_rfd = -1;
+
+static int write_full(int fd, const void *buf, size_t n) {
+    const char *p = (const char*)buf;
+    while (n) {
+        ssize_t w = write(fd, p, n);
+        if (w > 0) { p += w; n -= (size_t)w; continue; }
+        if (w == -1 && errno == EINTR) continue;
+        return -1;
+    }
+    return 0;
+}
+
+static int read_full(int fd, void *buf, size_t n) {
+    char *p = (char*)buf;
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, p + got, n - got);
+        if (r > 0) { got += (size_t)r; continue; }
+        if (r == 0) return 0; // EOF
+        if (errno == EINTR) continue;
+        return -1;
+    }
+    return 1;
+}
+
+static void guardian_loop(int rfd, int wfd) {
+#ifdef __linux__
+    // Jeśli proces-dziecko zginie (nawet SIGKILL), opiekun ma zniknąć razem z nim.
+    (void)prctl(PR_SET_PDEATHSIG, SIGKILL);
+#endif
+    while (1) {
+        PairMsg m;
+        int rr = read_full(rfd, &m, sizeof(m));
+        if (rr != 1) break;
+
+        // Ack zawsze, żeby dziecko nie utknęło.
+        PairMsg ack = {m.code, 0, 0};
+        if (write_full(wfd, &ack, sizeof(ack)) == -1) break;
+
+        if (m.code == PAIR_BRAMKA) {
+            // Symboliczny "pobyt" w bramce razem z dzieckiem.
+            usleep(300000);
+        }
+        if (m.code == PAIR_END) break;
+    }
+    _exit(0);
+}
+
+static void pair_spawn_if_needed(int is_dziecko) {
+    if (!is_dziecko) return;
+
+    int to_guard[2];
+    int from_guard[2];
+    if (pipe(to_guard) == -1) die_errno("pipe(to_guard)");
+    if (pipe(from_guard) == -1) die_errno("pipe(from_guard)");
+
+    pid_t p = fork();
+    if (p == -1) die_errno("fork(opiekun)");
+
+    if (p == 0) {
+        // opiekun
+        close(to_guard[1]);
+        close(from_guard[0]);
+        guardian_loop(to_guard[0], from_guard[1]);
+        _exit(0);
+    }
+
+    // dziecko
+    close(to_guard[0]);
+    close(from_guard[1]);
+
+    pair_on = 1;
+    pair_pid = p;
+    pair_wfd = to_guard[1];
+    pair_rfd = from_guard[0];
+
+    // Jak opiekun zniknie, nie chcemy SIGPIPE — dziecko po prostu kończy.
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        // nie jest krytyczne
+    }
+}
+
+static void pair_sync_or_die(int code, int a, int b) {
+    if (!pair_on) return;
+    PairMsg m = {code, a, b};
+    if (write_full(pair_wfd, &m, sizeof(m)) == -1) _exit(0);
+    PairMsg ack;
+    int rr = read_full(pair_rfd, &ack, sizeof(ack));
+    if (rr != 1) _exit(0);
+}
+
+static void pair_shutdown(void) {
+    if (!pair_on) return;
+    PairMsg m = {PAIR_END, 0, 0};
+    (void)write_full(pair_wfd, &m, sizeof(m));
+    if (pair_wfd != -1) close(pair_wfd);
+    if (pair_rfd != -1) close(pair_rfd);
+
+    // Sprzątamy po opiekunie, żeby nie robić zombie.
+    if (pair_pid > 0) {
+        while (waitpid(pair_pid, NULL, 0) == -1 && errno == EINTR) {}
+    }
+
+    pair_on = 0;
+    pair_pid = -1;
+    pair_wfd = -1;
+    pair_rfd = -1;
+}
+
+static void pair_kill_guardian(void) {
+    if (!pair_on) return;
+    if (pair_pid > 0) {
+        // Na wypadek wywalenia dziecka SIGKILL w środku bramki.
+        kill(pair_pid, SIGKILL);
     }
 }
 
@@ -113,6 +261,9 @@ static void expel_for_flare(SharedState *stan, int semid, int sem_sektora, int s
 
     if (shmdt(stan) == -1) warn_errno("shmdt");
 
+    // Dziecko nie wychodzi samo — opiekun też znika.
+    pair_kill_guardian();
+
     kill(getpid(), SIGKILL);
 
     _exit(137);
@@ -137,7 +288,6 @@ int main(int argc, char *argv[]) {
     int wiek = 10 + rand() % 60;
     int druzyna = rand() % 2;
 
-    /* Podłączenie do IPC. */
     /* shmget(): pobiera segment pamięci współdzielonej*/
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
     if (shmid == -1) { warn_errno("shmget"); exit(EXIT_FAILURE); }
@@ -159,6 +309,11 @@ int main(int argc, char *argv[]) {
     if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
     if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
+
+    // Dziecko nie porusza się bez opiekuna: uruchamiamy opiekuna jako proces-cień.
+    int is_dziecko = (wiek < 15 && !is_vip);
+    pair_spawn_if_needed(is_dziecko);
+
 /*
  * =======================================
  * KOLEJKA DO KAS: shm + msg (SEM_KASY)
@@ -175,6 +330,9 @@ int main(int argc, char *argv[]) {
 
     /*Jeśli nie ma biletu: dołącza do kolejki i wysyła request do kasjera*/
     if (!ma_juz_bilet) {
+        // Synchronizacja wejścia do kasy (kolejka + kupno biletu).
+        pair_sync_or_die(PAIR_KASA, 0, 0);
+
         sem_op(semid, SEM_KASY, -1);
         if (is_vip) stan->kolejka_vip++;
         else stan->kolejka_zwykla++;
@@ -187,8 +345,9 @@ int main(int argc, char *argv[]) {
         /* msgsnd(): wysyła żądanie do kolejki komunikatów*/
         while (msgsnd(msgid, &req, sizeof(int), 0) == -1) {
             if (errno == EINTR) continue;
-            if (errno == EIDRM || errno == EINVAL) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
+            if (errno == EIDRM || errno == EINVAL) { pair_shutdown(); if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
             warn_errno("msgsnd(kolejka)");
+            pair_shutdown();
             if (shmdt(stan) == -1) warn_errno("shmdt");
             exit(EXIT_FAILURE);
         }
@@ -204,16 +363,20 @@ int main(int argc, char *argv[]) {
         if (r >= 0) break;
 
         if (errno == EINTR) continue;
-        if (errno == EIDRM || errno == EINVAL) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
+        if (errno == EIDRM || errno == EINVAL) { pair_shutdown(); if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
         warn_errno("msgrcv(ticket)");
+        pair_shutdown();
         if (shmdt(stan) == -1) warn_errno("shmdt");
         exit(EXIT_FAILURE);
     }
 
-    if (bilet.sektor_id == -1) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
+    if (bilet.sektor_id == -1) { pair_shutdown(); if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
     int sektor = bilet.sektor_id;
+
+    // Synchronizacja: razem z opiekunem opuszczamy kasę i idziemy dalej.
+    pair_sync_or_die(PAIR_TICKET, sektor, 0);
 
 /*
  * ==========================
@@ -243,6 +406,7 @@ int main(int argc, char *argv[]) {
         sem_op(semid, SEM_EWAKUACJA, 0);
         obecni_dec(stan, semid, SEKTOR_VIP);
 
+        pair_shutdown();
         if (shmdt(stan) == -1) warn_errno("shmdt");
         exit(0);
     }
@@ -332,6 +496,9 @@ int main(int argc, char *argv[]) {
             fflush(stdout);
 
             sem_op(semid, sem_sektora, 1);
+
+            // Dziecko nie może być na bramce samo.
+            pair_sync_or_die(PAIR_BRAMKA, sektor, 0);
             usleep(300000);
 
             sem_op(semid, sem_sektora, -1);
@@ -385,6 +552,9 @@ int main(int argc, char *argv[]) {
 
             /* Zwolnienie semafora*/
             sem_op(semid, sem_sektora, 1);
+
+            // Dziecko nie może być na bramce samo.
+            pair_sync_or_die(PAIR_BRAMKA, sektor, wybrane);
             usleep(300000);
 
             /* Aktualizacja bramki po przejściu*/
@@ -435,10 +605,14 @@ int main(int argc, char *argv[]) {
     }
 
     if (wszedl_do_sektora) {
+        // Razem z opiekunem w sektorze.
+        pair_sync_or_die(PAIR_SEKTOR, sektor, 0);
         obecni_inc(stan, semid, sektor);
         sem_op(semid, SEM_EWAKUACJA, 0);
         obecni_dec(stan, semid, sektor);
     }
+
+    pair_shutdown();
 
     /* shmdt(): odłącza shm od procesu*/
     if (shmdt(stan) == -1) warn_errno("shmdt");

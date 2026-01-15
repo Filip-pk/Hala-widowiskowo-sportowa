@@ -73,13 +73,13 @@ int main() {
     if (shmdt(stan) == -1) warn_errno("shmdt");
 
 /*
- * Liczba semaforów:
+ * Semafory:
  *  - SEM_SHM (0): wspólne liczniki/flag w SharedState,
  *  - SEM_KASY (1): operacje na kolejkach i aktywności kas,
- *  - SEM_SEKTOR_START..: po jednym na sektor (bramki + agresor),
- *  - SEM_KIEROWNIK: wybór master-kierownika.
- *
- * n_sem = 3 + LICZBA_SEKTOROW => 2 globalne + 8 sektorów + 1 master.
+ *  - SEM_SEKTOR_START: po jednym na sektor (bramki + agresor),
+ *  - SEM_KIEROWNIK: wybór master-kierownika,
+ *  - SEM_EWAKUACJA: zdarzenie ewakuacji,
+ *  - SEM_SEKTOR_BLOCK_START: semafory blokad sektorow.
  */
 
     /* semget(): tworzy zestaw semaforów*/

@@ -199,19 +199,6 @@ int main() {
         break;
     }
 
-    /* Dopisanie podsumowania do raportu*/
-    FILE *rf = fopen("raport.txt", "a");
-    if (rf) {
-        fprintf(rf, "\nPODSUMOWANIE\n");
-        fprintf(rf, "weszlo %d\n", stan->cnt_weszlo);
-        fprintf(rf, "opiekun %d\n", stan->cnt_opiekun);
-        fprintf(rf, "kolega %d\n", stan->cnt_kolega);
-        fprintf(rf, "agresja %d\n", stan->cnt_agresja);
-        if (fclose(rf) == EOF) warn_errno("fclose(raport.txt)");
-    } else {
-        warn_errno("fopen(raport.txt)");
-    }
-
     /* shmdt(): odłącza pamięć współdzieloną od procesu main*/
     if (shmdt(stan) == -1) warn_errno("shmdt");
 
