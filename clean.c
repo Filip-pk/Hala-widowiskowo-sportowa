@@ -9,14 +9,14 @@
 
 int main() {
     /* shmget(): próba znalezienia istniejącego segmentu shm*/
-    int shmid = shmget(KEY_SHM, 0, 0600);
+    int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
     if (shmid != -1) {
         /* shmctl(IPC_RMID): usuwa segment pamięci współdzielonej*/
         if (shmctl(shmid, IPC_RMID, NULL) == -1) warn_errno("shmctl(IPC_RMID)");
     } else if (errno != ENOENT) warn_errno("shmget");
 
     /* semget(): próba znalezienia istniejącego zestawu semaforów*/
-    int semid = semget(KEY_SEM, 0, 0600);
+    int semid = semget(KEY_SEM, N_SEM, 0600);
     if (semid != -1) {
         /* semctl(IPC_RMID): usuwa cały zestaw semaforów*/
         if (semctl(semid, 0, IPC_RMID) == -1) warn_errno("semctl(IPC_RMID)");

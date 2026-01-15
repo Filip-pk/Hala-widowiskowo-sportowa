@@ -151,7 +151,7 @@ int main(int argc, char *argv[]) {
 
                 /* Dopiero gdy bramki puste i nikt nie siedzi w sektorze -> sektor ewakuowany*/
                 if (b0 == 0 && b1 == 0 && ob == 0) break;
-                usleep(10000);
+                //usleep(10000);
             }
 
             /* Raport do kierownika: sektor pusty*/

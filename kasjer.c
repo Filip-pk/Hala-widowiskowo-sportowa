@@ -68,11 +68,11 @@ static int all_sold_out(SharedState *stan, int limit_sektor, int limit_vip) {
  * Uruchamia dodatkowego kibica kolege gdy sprzedano 2 bilety
  * fork(): tworzy nowy proces
  */
-static void spawn_friend_kibic(int friend_id) {
+static int spawn_friend_kibic(int friend_id) {
     pid_t pid = fork();
     if (pid == -1) {
         warn_errno("fork(spawn_friend_kibic)");
-        return;
+        return 0;
     }
     if (pid == 0) {
         char idbuf[32], racabuf[8];
@@ -84,6 +84,7 @@ static void spawn_friend_kibic(int friend_id) {
         execl("./kibic", "kibic", idbuf, "0", racabuf, "1", NULL);
         die_errno("execl(spawn_friend_kibic)");
     }
+    return 1;
 }
 
 /*
@@ -163,7 +164,7 @@ int main(int argc, char *argv[]) {
 
         /* Jeśli ta kasa jest wyłączona, kasjer “śpi" i tylko sprawdza stan*/
         if (stan->aktywne_kasy[id] == 0) {
-            usleep(10000);
+            //usleep(10000);
             continue;
         }
 
@@ -270,14 +271,14 @@ int main(int argc, char *argv[]) {
         }
 
         if (!klient_typ) {
-            usleep(5000);
+            //usleep(5000);
             continue;
         }
 
         if (stan->ewakuacja_trwa) break;
         if (stan->sprzedaz_zakonczona) break;
 
-        usleep(10000);
+        //usleep(10000);
 
         if (klient_typ == 1) {
             int sektor = -1;
@@ -457,12 +458,13 @@ int main(int argc, char *argv[]) {
  */
 
         /* Jeśli była para biletów: odpalamy proces kolegi i wysyłamy mu bilet. */
+        int friend_spawned = 0;
         if (friend_id != -1 && ile_sprzedane == 2) {
-            spawn_friend_kibic(friend_id);
+            friend_spawned = spawn_friend_kibic(friend_id);
         }
 
         send_ticket(msgid_ticket, kibic_id, sektor);
-        if (friend_id != -1 && ile_sprzedane == 2) {
+        if (friend_spawned) {
             send_ticket(msgid_ticket, friend_id, sektor);
         }
     }
