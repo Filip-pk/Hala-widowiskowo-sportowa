@@ -7,7 +7,7 @@
  *  1) podpiąć IPC (shm/sem/msg) utworzone wcześniej przez ./setup,
  *  2) uruchomić procesy: kierownik, pracownicy sektorów, kasjerzy,
  *  3) generować procesy kibiców w sposób kontrolowany (limit MAX_PROC),
- *  4) na końcu zebrać wszystkie dzieci i dopisać podsumowanie do raportu.
+ *  4) na końcu zebrać wszystkie dzieci.
  *
  * Dlaczego limit MAX_PROC + waitpid(WNOHANG)?
  *  - Kibiców jest dużo a generator robi K*1.5 prób,
@@ -17,9 +17,43 @@
  *    jednocześnie, a zakończone procesy są zbierane (żeby nie robić zombie).
  */
 
+static volatile sig_atomic_t g_stop = 0;
+
+static void on_stop_signal(int sig) {
+    (void)sig;
+    g_stop = 1;
+}
+
+static int sem_op_blocking(int semid, unsigned short num, short op) {
+    struct sembuf sb;
+    sb.sem_num = num;
+    sb.sem_op  = op;
+    sb.sem_flg = 0;
+
+    while (semop(semid, &sb, 1) == -1) {
+        if (errno == EINTR) continue;
+        return -1;
+    }
+    return 0;
+}
+
+static void request_shutdown(SharedState *stan, int semid) {
+    if (sem_op_blocking(semid, SEM_SHM, -1) == -1) return;
+    stan->sprzedaz_zakonczona = 1;
+    stan->ewakuacja_trwa = 1;
+    (void)sem_op_blocking(semid, SEM_SHM, +1);
+}
 
 int main() {
     setbuf(stdout, NULL);
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_stop_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    if (sigaction(SIGINT, &sa, NULL) == -1) warn_errno("sigaction(SIGINT)");
+    if (sigaction(SIGTERM, &sa, NULL) == -1) warn_errno("sigaction(SIGTERM)");
 
     /* shmget(): pobiera istniejący segment pamięci współdzielonej*/
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
@@ -37,6 +71,7 @@ int main() {
     /* msgget(): pobiera istniejącą kolejkę komunikatów*/
     int msgid = msgget(KEY_MSG, 0600);
     if (msgid == -1) die_errno("msgget");
+    (void)msgid;
 
     /* shmat(): mapuje shm do pamięci procesu, żeby czytać/ustawiać stan symulacji*/
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
@@ -124,12 +159,22 @@ int main() {
     sleep(1);
 
     for (int i = 0; i < total_kibicow; i++) {
+        /* Jeśli Ctrl+C, kończymy generowanie i przechodzimy do sprzątania*/
+        if (g_stop) {
+            request_shutdown(stan, semid);
+            break;
+        }
+
         while (1) {
             /* waitpid(WNOHANG): zbiera zakończone dzieci żeby nie powstały zombie*/
             pid_t w = waitpid(-1, NULL, WNOHANG);
             if (w > 0) { active--; continue; }
             if (w == 0) break;
-            if (errno == EINTR) continue;
+
+            if (errno == EINTR) {
+                if (g_stop) break;
+                continue;
+            }
             if (errno != ECHILD) warn_errno("waitpid(WNOHANG)");
             break;
         }
@@ -138,7 +183,10 @@ int main() {
             while (1) {
                 pid_t w = wait(NULL);
                 if (w > 0) { active--; break; }
-                if (errno == EINTR) continue;
+                if (errno == EINTR) {
+                    if (g_stop) break;
+                    continue;
+                }
                 if (errno != ECHILD) warn_errno("wait");
                 break;
             }
@@ -174,9 +222,11 @@ int main() {
             char id[20], v[8], r[8];
             sprintf(id, "%d", i);
             sprintf(v, "%d", is_vip);
-            /* ~0.5% kibiców ma race */
+
+            /* ~0.5% kibiców ma race*/
             int has_raca = (rand() % 1000 < 5) ? 1 : 0;
             sprintf(r, "%d", has_raca);
+
             /* exec(): uruchamia ./kibic*/
             execl("./kibic", "kibic", id, v, r, NULL);
             die_errno("execl(kibic)");
@@ -186,16 +236,48 @@ int main() {
         usleep(10000 + (rand() % 1000)); /* nie chcemy odpalić wszystkiego naraz*/
     }
 
+    if (g_stop) {
+        printf("\n[MAIN] Przerwano sygnałem. Kończę procesy i sprzątam IPC...\n");
+        fflush(stdout);
+        if (killpg(getpgrp(), SIGTERM) == -1 && errno != ESRCH) {
+            warn_errno("killpg(SIGTERM)");
+        }
+    }
+
     printf("[MAIN] Koniec generowania kibiców. Czekam na procesy...\n");
     fflush(stdout);
 
-    /* Czekamy aż wszystkie dzieci zakończą pracę. */
+    /*
+     * Czekamy aż wszystkie dzieci zakończą pracę.
+     * Przy Ctrl+C nie chcemy wisieć w wait() w nieskończoność
+     */
+    int spin = 0;
     while (1) {
-        /* wait(): zbiera wszystkie pozostałe procesy potomne*/
-        pid_t w = wait(NULL);
+        pid_t w = waitpid(-1, NULL, WNOHANG);
         if (w > 0) continue;
+
+        if (w == 0) {
+            if (!g_stop) {
+                w = wait(NULL);
+                if (w > 0) continue;
+                if (errno == EINTR) continue;
+                if (errno != ECHILD) warn_errno("wait");
+                break;
+            }
+
+            usleep(20000);
+            if (++spin == 100) {
+                if (killpg(getpgrp(), SIGKILL) == -1 && errno != ESRCH) {
+                    warn_errno("killpg(SIGKILL)");
+                }
+            }
+            continue;
+        }
+
         if (errno == EINTR) continue;
-        if (errno != ECHILD) warn_errno("wait");
+        if (errno == ECHILD) break;
+
+        warn_errno("waitpid");
         break;
     }
 
