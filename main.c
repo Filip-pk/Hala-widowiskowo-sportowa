@@ -156,7 +156,7 @@ int main() {
 
     if (time(NULL) == (time_t)-1) warn_errno("time");
     srand((unsigned)time(NULL));
-    //sleep(1);
+    sleep(1);
 
     for (int i = 0; i < total_kibicow; i++) {
         /* Jeśli Ctrl+C, kończymy generowanie i przechodzimy do sprzątania*/
@@ -238,7 +238,7 @@ int main() {
         }
 
         active++;
-        //usleep(1000 + (rand() % 1000)); /* nie chcemy odpalić wszystkiego naraz*/
+        usleep(1000 + (rand() % 1000)); /* nie chcemy odpalić wszystkiego naraz*/
     }
 
     if (g_stop) {
@@ -270,7 +270,7 @@ int main() {
                 break;
             }
 
-            //usleep(2000);
+            usleep(2000);
             if (++spin == 100) {
                 if (killpg(getpgrp(), SIGKILL) == -1 && errno != ESRCH) {
                     warn_errno("killpg(SIGKILL)");
