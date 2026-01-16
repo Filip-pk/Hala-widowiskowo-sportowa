@@ -57,7 +57,7 @@ static inline void die_errno(const char *ctx) {
  * ========================= */
 
 /* K – liczba kibicow. */
-#define K 10000
+#define K 500
 
 /* Sektory standardowe*/
 #define LICZBA_SEKTOROW 8

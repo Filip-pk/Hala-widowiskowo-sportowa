@@ -183,7 +183,7 @@ static void ewakuacja(int msgid, int semid, SharedState *stan) {
     }
 
     while (stan->obecni_w_sektorze[SEKTOR_VIP] > 0) {
-        usleep(10000);
+        usleep(100000);
     }
 
     printf("[KIEROWNIK] Koniec symulacji\n");

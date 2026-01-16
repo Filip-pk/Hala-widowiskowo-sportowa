@@ -103,7 +103,7 @@ static void guardian_loop(int rfd, int wfd) {
 
         if (m.code == PAIR_BRAMKA) {
             // Symboliczny "pobyt" w bramce razem z dzieckiem.
-            usleep(30000);
+            usleep(300000);
         }
         if (m.code == PAIR_END) break;
     }
@@ -307,7 +307,7 @@ int main(int argc, char *argv[]) {
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) die_errno("shmat");
 
-    if (wiek < 15 && !is_vip) usleep(1000);
+    if (wiek < 15 && !is_vip) usleep(10000);
     if (stan->ewakuacja_trwa) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
     if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
     if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
@@ -459,7 +459,7 @@ int main(int argc, char *argv[]) {
         }
         if (stan->agresor_sektora[sektor] != 0 && stan->agresor_sektora[sektor] != my_id) {
             sem_op(semid, sem_sektora, 1);
-            usleep(10000);
+            usleep(100000);
             continue;
         }
 
@@ -469,7 +469,7 @@ int main(int argc, char *argv[]) {
 
             if (stan->agresor_sektora[sektor] != my_id) {
                 sem_op(semid, sem_sektora, 1);
-                usleep(10000);
+                usleep(100000);
                 continue;
             }
 
@@ -478,7 +478,7 @@ int main(int argc, char *argv[]) {
 
             if (!(empty0 && empty1)) {
                 sem_op(semid, sem_sektora, 1);
-                usleep(5000);
+                usleep(50000);
                 continue;
             }
 
@@ -502,7 +502,7 @@ int main(int argc, char *argv[]) {
 
             // Dziecko nie może być na bramce samo.
             pair_sync_or_die(PAIR_BRAMKA, sektor, 0);
-            usleep(30000);
+            usleep(300000);
 
             sem_op(semid, sem_sektora, -1);
             if (stan->bramki[sektor][0].zajetosc > 0) stan->bramki[sektor][0].zajetosc--;
@@ -558,7 +558,7 @@ int main(int argc, char *argv[]) {
 
             // Dziecko nie może być na bramce samo.
             pair_sync_or_die(PAIR_BRAMKA, sektor, wybrane);
-            usleep(30000);
+            usleep(300000);
 
             /* Aktualizacja bramki po przejściu*/
             sem_op(semid, sem_sektora, -1);
@@ -598,7 +598,7 @@ int main(int argc, char *argv[]) {
 
         /* puść mutex sektora dopiero po obliczeniach */
         sem_op(semid, sem_sektora, 1);
-        usleep(10000);
+        usleep(100000);
     }
 
     if (tryb_agresora) {

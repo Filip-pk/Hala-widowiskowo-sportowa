@@ -238,7 +238,7 @@ int main() {
         }
 
         active++;
-        usleep(1000 + (rand() % 1000)); /* nie chcemy odpalić wszystkiego naraz*/
+        usleep(10000 + (rand() % 1000)); /* nie chcemy odpalić wszystkiego naraz*/
     }
 
     if (g_stop) {
@@ -270,7 +270,7 @@ int main() {
                 break;
             }
 
-            usleep(2000);
+            usleep(20000);
             if (++spin == 100) {
                 if (killpg(getpgrp(), SIGKILL) == -1 && errno != ESRCH) {
                     warn_errno("killpg(SIGKILL)");
