@@ -218,15 +218,15 @@ int main() {
             }
         }
 
+        /* Przerywamy generowanie, gdy trwa ewakuacja lub sprzedaż jest zakończona*/
+        if (stan->ewakuacja_trwa) break;
+        if (stan->sprzedaz_zakonczona) break;
+
         /* Przerywamy generowanie, gdy mecz się skończył */
         if (stan->status_meczu == 2) {
             stopped_by_match_end = 1;
             break;
         }
-
-        /* Przerywamy generowanie, gdy trwa ewakuacja lub sprzedaż jest zakończona*/
-        if (stan->ewakuacja_trwa) break;
-        if (stan->sprzedaz_zakonczona) break;
 
         /*VIP losowo (~0.3%)*/
         int is_vip = 0;
@@ -283,8 +283,16 @@ int main() {
     }
 
     /* Jeśli mecz zakończył się zanim wygenerowaliśmy wszystkich kibiców,
-     * to nie chcemy wisieć w wait() — sprzątamy IPC od razu. */
-    if (!g_stop && stopped_by_match_end && generated < total_kibicow) {
+     * to nie chcemy wisieć w wait()*/
+    int ewakuacja_now = 0;
+    if (sem_op_blocking(semid, SEM_SHM, -1) == 0) {
+        ewakuacja_now = stan->ewakuacja_trwa;
+        (void)sem_op_blocking(semid, SEM_SHM, +1);
+    } else {
+        ewakuacja_now = stan->ewakuacja_trwa;
+    }
+
+    if (!g_stop && stopped_by_match_end && generated < total_kibicow && !ewakuacja_now) {
         printf("\n[MAIN] Mecz zakonczony przed koncem generowania (%d/%d). Uruchamiam ./clean...\n", generated, total_kibicow);
         fflush(stdout);
 
@@ -298,6 +306,10 @@ int main() {
         return 0;
     }
 
+    if (!g_stop && stopped_by_match_end && generated < total_kibicow && ewakuacja_now) {
+        printf("[MAIN] status_meczu==2, czekam na raporty.\n");
+        fflush(stdout);
+    }
 
     if (g_stop) {
         printf("\n[MAIN] Przerwano sygnałem. Kończę procesy i sprzątam IPC...\n");

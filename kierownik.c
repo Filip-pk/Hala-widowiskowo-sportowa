@@ -83,12 +83,17 @@ static void send_to_master(int msgid, int cmd, int sektor) {
     }
 }
 
-static void send_ticket(int msgid, int kibic_id, int sektor) {
+/*
+ * Bilety/odmowy dla kibiców idą NA OSOBNĄ KOLEJKĘ (KEY_MSG_TICKET).
+ * Jeśli wyślemy je na KEY_MSG (kolejka żądań), kibice będą wisieć w msgrcv()
+ * i cała symulacja nie dojdzie do końca (brak ./clean).
+ */
+static void send_ticket(int msgid_ticket, int kibic_id, int sektor) {
     MsgBilet msg;
     msg.mtype = MSGTYPE_TICKET_BASE + kibic_id;
     msg.sektor_id = sektor;
 
-    while (msgsnd(msgid, &msg, sizeof(int), 0) == -1) {
+    while (msgsnd(msgid_ticket, &msg, sizeof(int), 0) == -1) {
         if (errno == EINTR) continue;
         if (errno == EIDRM || errno == EINVAL) return;
         warn_errno("msgsnd(send_ticket@kierownik)");
@@ -96,12 +101,12 @@ static void send_ticket(int msgid, int kibic_id, int sektor) {
     }
 }
 
-static void cancel_queue_type(int msgid, long req_type) {
+static void cancel_queue_type(int msgid_req, int msgid_ticket, long req_type) {
     MsgKolejka req;
     while (1) {
-        ssize_t r = msgrcv(msgid, &req, sizeof(int), req_type, IPC_NOWAIT);
+        ssize_t r = msgrcv(msgid_req, &req, sizeof(int), req_type, IPC_NOWAIT);
         if (r >= 0) {
-            send_ticket(msgid, req.kibic_id, -1);
+            send_ticket(msgid_ticket, req.kibic_id, -1);
             continue;
         }
         if (errno == ENOMSG) break;
@@ -112,7 +117,7 @@ static void cancel_queue_type(int msgid, long req_type) {
     }
 }
 
-static void ewakuacja(int msgid, int semid, SharedState *stan) {
+static void ewakuacja(int msgid_req, int msgid_ticket, int semid, SharedState *stan) {
 /*
  * =====================
  * EWAKUACJA
@@ -151,12 +156,12 @@ static void ewakuacja(int msgid, int semid, SharedState *stan) {
         }
     }
 
-    cancel_queue_type(msgid, MSGTYPE_VIP_REQ);
-    cancel_queue_type(msgid, MSGTYPE_STD_REQ);
+    cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_VIP_REQ);
+    cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_STD_REQ);
 
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
         MsgSterujacy msg = {10 + i, 3, i};
-        if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
+        if (msgsnd(msgid_req, &msg, sizeof(int) * 2, 0) == -1) {
             if (errno == EIDRM || errno == EINVAL) return;
             warn_errno("msgsnd(ewakuacja)");
         }
@@ -169,7 +174,7 @@ static void ewakuacja(int msgid, int semid, SharedState *stan) {
     int raporty = 0;
     while (raporty < LICZBA_SEKTOROW) {
         MsgSterujacy rap;
-        ssize_t res = msgrcv(msgid, &rap, sizeof(int) * 2, 99, 0);
+        ssize_t res = msgrcv(msgid_req, &rap, sizeof(int) * 2, 99, 0);
         if (res >= 0) {
             printf("[RAPORT] Sektor %d pusty\n", rap.sektor_id);
             fflush(stdout);
@@ -259,7 +264,7 @@ static pid_t start_clock_process(SharedState *stan, int semid) {
  */
 
     /* Sygnał 3: natychmiastowa ewakuacja zatrzymujemy zegar*/
-static int handle_cmd_master(int msgid, int semid, SharedState *stan, pid_t *zegar_pid, int cmd, int sektor) {
+static int handle_cmd_master(int msgid_req, int msgid_ticket, int semid, SharedState *stan, pid_t *zegar_pid, int cmd, int sektor) {
     if (cmd == 3) {
         if (*zegar_pid > 0) {
             /* kill(): wysyła sygnał SIGTERM do procesu zegara*/
@@ -270,7 +275,7 @@ static int handle_cmd_master(int msgid, int semid, SharedState *stan, pid_t *zeg
             *zegar_pid = -1;
         }
 
-        ewakuacja(msgid, semid, stan);
+        ewakuacja(msgid_req, msgid_ticket, semid, stan);
         return 1; /* koniec */
     }
 
@@ -285,7 +290,7 @@ static int handle_cmd_master(int msgid, int semid, SharedState *stan, pid_t *zeg
         MsgSterujacy msg = {10 + sektor, cmd, sektor};
 
         /* msgsnd(): wysyła polecenie sterowania do pracownika sektora*/
-        if (msgsnd(msgid, &msg, sizeof(int) * 2, 0) == -1) {
+        if (msgsnd(msgid_req, &msg, sizeof(int) * 2, 0) == -1) {
             if (!(errno == EIDRM || errno == EINVAL)) warn_errno("msgsnd(sterowanie)");
         }
         return 0;
@@ -299,9 +304,13 @@ static int handle_cmd_master(int msgid, int semid, SharedState *stan, pid_t *zeg
 int main() {
     setbuf(stdout, NULL);
 
-    /* msgget(): pobiera istniejącą kolejkę komunikatów*/
-    int msgid = msgget(KEY_MSG, 0600);
-    if (msgid == -1) die_errno("msgget");
+    /* msgget(): pobiera kolejkę żądań (kibic -> kasjer, oraz sterowanie sektorami) */
+    int msgid_req = msgget(KEY_MSG, 0600);
+    if (msgid_req == -1) die_errno("msgget(req)");
+
+    /* msgget(): pobiera kolejkę biletów (kasjer/kierownik -> kibic) */
+    int msgid_ticket = msgget(KEY_MSG_TICKET, 0600);
+    if (msgid_ticket == -1) die_errno("msgget(ticket)");
 
     /* semget(): pobiera istniejący zestaw semaforów*/
     int semid = semget(KEY_SEM, 0, 0600);
@@ -350,7 +359,7 @@ int main() {
             }
 
             if (cmd == 3) {
-                send_to_master(msgid, 3, -1);
+                send_to_master(msgid_req, 3, -1);
                 continue;
             }
 
@@ -363,7 +372,7 @@ int main() {
                 continue;
             }
 
-            send_to_master(msgid, cmd, s);
+            send_to_master(msgid_req, cmd, s);
         }
 
         /* shmdt(): odłącza shm od procesu kierownika*/
@@ -397,7 +406,7 @@ int main() {
         if (zegar_pid > 0) {
             while (1) {
                 pid_t w = waitpid(zegar_pid, NULL, WNOHANG);
-                if (w > 0) { ewakuacja(msgid, semid, stan); goto out; }
+                if (w > 0) { ewakuacja(msgid_req, msgid_ticket, semid, stan); goto out; }
                 if (w == 0) break;
                 if (errno == EINTR) continue;
                 warn_errno("waitpid(WNOHANG)");
@@ -409,9 +418,9 @@ int main() {
         while (1) {
             MsgSterujacy c;
             /* msgrcv(): odbiera komunikat z kolejki*/
-            ssize_t r = msgrcv(msgid, &c, sizeof(int) * 2, MSGTYPE_KIEROWNIK_CTRL, IPC_NOWAIT);
+            ssize_t r = msgrcv(msgid_req, &c, sizeof(int) * 2, MSGTYPE_KIEROWNIK_CTRL, IPC_NOWAIT);
             if (r >= 0) {
-                if (handle_cmd_master(msgid, semid, stan, &zegar_pid, c.typ_sygnalu, c.sektor_id)) goto out;
+                if (handle_cmd_master(msgid_req, msgid_ticket, semid, stan, &zegar_pid, c.typ_sygnalu, c.sektor_id)) goto out;
                 continue;
             }
 
@@ -446,7 +455,7 @@ int main() {
             }
 
             if (cmd == 3) {
-                if (handle_cmd_master(msgid, semid, stan, &zegar_pid, 3, -1)) break;
+                if (handle_cmd_master(msgid_req, msgid_ticket, semid, stan, &zegar_pid, 3, -1)) break;
                 continue;
             }
 
@@ -460,7 +469,7 @@ int main() {
                     continue;
                 }
 
-                if (handle_cmd_master(msgid, semid, stan, &zegar_pid, cmd, s)) break;
+                if (handle_cmd_master(msgid_req, msgid_ticket, semid, stan, &zegar_pid, cmd, s)) break;
                 continue;
             }
 
