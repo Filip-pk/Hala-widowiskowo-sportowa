@@ -153,7 +153,7 @@ static void pair_spawn_if_needed(int is_dziecko, int my_id, SharedState *stan, i
     pair_wfd = to_guard[1];
     pair_rfd = from_guard[0];
 
-    // Jak opiekun zniknie, nie chcemy SIGPIPE — dziecko po prostu kończy.
+    // Jak opiekun zniknie, dziecko po prostu kończy.
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
         // nie jest krytyczne
     }
@@ -221,7 +221,7 @@ static const char* team_name(int druzyna) {
  *  - sektor: docelowy sektor (0..7 albo VIP)
  */
 static void append_report(int kibic_id, int wiek, int sektor) {
-    const char *typ = (sektor == SEKTOR_VIP) ? "vip" : ((wiek < 15) ? "opiekun" : "zwykly");
+    const char *typ = (sektor == SEKTOR_VIP) ? "vip" : ((wiek < 15) ? "opiekun z dzieckiem" : "zwykly");
 
     /* open(): otwiera plik raportu do dopisywania*/
     int fd = open("raport.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -555,7 +555,7 @@ int main(int argc, char *argv[]) {
             const char *tn = team_name(druzyna);
 
             if (wiek < 15) {
-                printf("[SEKTOR %d|ST %d] Wchodzi %s%s%s %s(+OPIEKUN)%s. Stan: %d/3\n",
+                printf("[SEKTOR %d|ST %d] Wchodzi %s%s%s %s(OPIEKUN + DZIECKO)%s. Stan: %d/3\n",
                        sektor, wybrane,
                        tc, tn, CLR_RESET,
                        CLR_LBLUE, CLR_RESET,

@@ -174,8 +174,11 @@ int main() {
     /* Generator kibiców*/
 
     
-    int total_kibicow = (int)(K);
+    int total_kibicow = (int)(K*0.85);
     int active = 0, vip_cnt = 0;
+
+    int stopped_by_match_end = 0;
+    int generated = 0;
 
     if (time(NULL) == (time_t)-1) warn_errno("time");
     srand((unsigned)time(NULL));
@@ -213,6 +216,12 @@ int main() {
                 if (errno != ECHILD) warn_errno("wait");
                 break;
             }
+        }
+
+        /* Przerywamy generowanie, gdy mecz się skończył */
+        if (stan->status_meczu == 2) {
+            stopped_by_match_end = 1;
+            break;
         }
 
         /* Przerywamy generowanie, gdy trwa ewakuacja lub sprzedaż jest zakończona*/
@@ -269,8 +278,26 @@ int main() {
         }
 
         active++;
+        generated++;
         usleep(10000 + (rand() % 1000)); /* nie chcemy odpalić wszystkiego naraz*/
     }
+
+    /* Jeśli mecz zakończył się zanim wygenerowaliśmy wszystkich kibiców,
+     * to nie chcemy wisieć w wait() — sprzątamy IPC od razu. */
+    if (!g_stop && stopped_by_match_end && generated < total_kibicow) {
+        printf("\n[MAIN] Mecz zakonczony przed koncem generowania (%d/%d). Uruchamiam ./clean...\n", generated, total_kibicow);
+        fflush(stdout);
+
+        request_shutdown(stan, semid);
+        if (killpg(getpgrp(), SIGTERM) == -1 && errno != ESRCH) {
+            warn_errno("killpg(SIGTERM)");
+        }
+
+        if (shmdt(stan) == -1) warn_errno("shmdt");
+        if (system("./clean > /dev/null 2>&1") == -1) warn_errno("system(./clean)");
+        return 0;
+    }
+
 
     if (g_stop) {
         printf("\n[MAIN] Przerwano sygnałem. Kończę procesy i sprzątam IPC...\n");
