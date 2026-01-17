@@ -182,9 +182,9 @@ static void ewakuacja(int msgid, int semid, SharedState *stan) {
         }
     }
 
-    /*while (stan->obecni_w_sektorze[SEKTOR_VIP] > 0) {
-        usleep(10000);
-    }*/
+    while (stan->obecni_w_sektorze[SEKTOR_VIP] > 0) {
+        usleep(100000);
+    }
 
     printf("[KIEROWNIK] Koniec symulacji\n");
     fflush(stdout);
@@ -214,7 +214,7 @@ static pid_t start_clock_process(SharedState *stan, int semid) {
         int left = CZAS_PRZED_MECZEM - (int)(now - start);
         if (left <= 0) break;
         stan->czas_pozostaly = left;
-        //sleep(1);
+        sleep(1);
     }
 
     /* Start meczu*/
@@ -230,7 +230,7 @@ static pid_t start_clock_process(SharedState *stan, int semid) {
         int left = CZAS_MECZU - (int)(now - start);
         if (left <= 0) break;
         stan->czas_pozostaly = left;
-        //sleep(1);
+        sleep(1);
     }
 
     /* Koniec meczu zegar kończy działanie*/
