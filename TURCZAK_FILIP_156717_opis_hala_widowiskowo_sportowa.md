@@ -54,10 +54,10 @@ Kierownik wydaje polecenia (sygnały) obsługiwane przez pracowników techniczny
 
 Raport z symulacji będzie obejmował następujące testy weryfikujące poprawność działania:
 
-1.  **Test skalowalności kas:**
+1.  **Test otwierania dodatkowych kas:**
     * Symulacja nagłego napływu kibiców, aby sprawdzić, czy otwierają się dodatkowe kasy.
 
-2.  **Test skalowalności kas:**
+2.  **Test zamykania nadmiarowych kas:**
     * Symulacja spadku liczby kibiców w kolejce, aby sprawdzić, czy kasy się zamykają.
 
 3.  **Test agresji:**
