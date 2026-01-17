@@ -101,16 +101,16 @@ static void guardian_loop(int rfd, int wfd) {
         PairMsg ack = {m.code, 0, 0};
         if (write_full(wfd, &ack, sizeof(ack)) == -1) break;
 
-        if (m.code == PAIR_BRAMKA) {
+        /*if (m.code == PAIR_BRAMKA) {
             // Symboliczny "pobyt" w bramce razem z dzieckiem.
-            usleep(300000);
-        }
+            usleep(30000);
+        }*/
         if (m.code == PAIR_END) break;
     }
     _exit(0);
 }
 
-static void pair_spawn_if_needed(int is_dziecko) {
+static void pair_spawn_if_needed(int is_dziecko, int my_id, SharedState *stan, int semid) {
     if (!is_dziecko) return;
 
     int to_guard[2];
@@ -118,8 +118,23 @@ static void pair_spawn_if_needed(int is_dziecko) {
     if (pipe(to_guard) == -1) die_errno("pipe(to_guard)");
     if (pipe(from_guard) == -1) die_errno("pipe(from_guard)");
 
+    if (!reserve_process_slot(stan, semid)) {
+        close(to_guard[0]); close(to_guard[1]);
+        close(from_guard[0]); close(from_guard[1]);
+        // Dziecko nie moze wejsc samo: jesli nie da sie utworzyc procesu-opiekuna,
+        // konczymy proces dziecka zanim wejdzie do kasy/bramek.
+        fprintf(stderr, CLR_RED
+                "[DZIECKO %d] Brak miejsca na opiekuna — rezygnuje z wejscia."
+                CLR_RESET "\n", my_id);
+        if (shmdt(stan) == -1) warn_errno("shmdt");
+        _exit(0);
+    }
+
     pid_t p = fork();
-    if (p == -1) die_errno("fork(opiekun)");
+    if (p == -1) {
+        rollback_process_slot(stan, semid);
+        die_errno("fork(opiekun)");
+    }
 
     if (p == 0) {
         // opiekun
@@ -307,14 +322,14 @@ int main(int argc, char *argv[]) {
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
     if (stan == (void*)-1) die_errno("shmat");
 
-    if (wiek < 15 && !is_vip) usleep(10000);
+    //if (wiek < 15 && !is_vip) usleep(1000);
     if (stan->ewakuacja_trwa) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
     if (!ma_juz_bilet && !is_vip && stan->standard_sold_out) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
     if (!ma_juz_bilet && stan->sprzedaz_zakonczona) { if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
 
     // Dziecko nie porusza się bez opiekuna: uruchamiamy opiekuna jako proces-cień.
     int is_dziecko = (wiek < 15 && !is_vip);
-    pair_spawn_if_needed(is_dziecko);
+    pair_spawn_if_needed(is_dziecko, my_id, stan, semid);
 
 /*
  * =======================================
@@ -459,7 +474,7 @@ int main(int argc, char *argv[]) {
         }
         if (stan->agresor_sektora[sektor] != 0 && stan->agresor_sektora[sektor] != my_id) {
             sem_op(semid, sem_sektora, 1);
-            usleep(100000);
+            //usleep(10000);
             continue;
         }
 
@@ -469,7 +484,7 @@ int main(int argc, char *argv[]) {
 
             if (stan->agresor_sektora[sektor] != my_id) {
                 sem_op(semid, sem_sektora, 1);
-                usleep(100000);
+                //usleep(10000);
                 continue;
             }
 
@@ -478,7 +493,7 @@ int main(int argc, char *argv[]) {
 
             if (!(empty0 && empty1)) {
                 sem_op(semid, sem_sektora, 1);
-                usleep(50000);
+                //usleep(5000);
                 continue;
             }
 
@@ -502,7 +517,7 @@ int main(int argc, char *argv[]) {
 
             // Dziecko nie może być na bramce samo.
             pair_sync_or_die(PAIR_BRAMKA, sektor, 0);
-            usleep(300000);
+            //usleep(30000);
 
             sem_op(semid, sem_sektora, -1);
             if (stan->bramki[sektor][0].zajetosc > 0) stan->bramki[sektor][0].zajetosc--;
@@ -558,7 +573,7 @@ int main(int argc, char *argv[]) {
 
             // Dziecko nie może być na bramce samo.
             pair_sync_or_die(PAIR_BRAMKA, sektor, wybrane);
-            usleep(300000);
+            //usleep(30000);
 
             /* Aktualizacja bramki po przejściu*/
             sem_op(semid, sem_sektora, -1);
@@ -598,7 +613,7 @@ int main(int argc, char *argv[]) {
 
         /* puść mutex sektora dopiero po obliczeniach */
         sem_op(semid, sem_sektora, 1);
-        usleep(100000);
+        //usleep(10000);
     }
 
     if (tryb_agresora) {

@@ -59,6 +59,7 @@ int main() {
 
     /* Inicjalizacja stanu symulacji w pamięci współdzielonej*/
     memset(stan, 0, sizeof(SharedState));
+    stan->active_proc = 0;
     stan->aktywne_kasy[0] = 1;
     stan->aktywne_kasy[1] = 1;
     stan->next_kibic_id = DYN_ID_START;

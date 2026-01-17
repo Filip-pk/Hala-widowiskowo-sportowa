@@ -182,18 +182,26 @@ static void ewakuacja(int msgid, int semid, SharedState *stan) {
         }
     }
 
-    while (stan->obecni_w_sektorze[SEKTOR_VIP] > 0) {
-        usleep(100000);
-    }
+    /*while (stan->obecni_w_sektorze[SEKTOR_VIP] > 0) {
+        usleep(10000);
+    }*/
 
     printf("[KIEROWNIK] Koniec symulacji\n");
     fflush(stdout);
 }
 
-static pid_t start_clock_process(SharedState *stan) {
+static pid_t start_clock_process(SharedState *stan, int semid) {
+    if (!reserve_process_slot(stan, semid)) {
+        printf("Limit procesow osiagniety\n");
+        fflush(stdout);
+        return -1;
+    }
     /* fork(): tworzy proces potomny, tu: zegar*/
     pid_t zegar_pid = fork();
-    if (zegar_pid == -1) die_errno("fork(zegar)");
+    if (zegar_pid == -1) {
+        rollback_process_slot(stan, semid);
+        die_errno("fork(zegar)");
+    }
     if (zegar_pid != 0) return zegar_pid;
 
     /* Dziecko: aktualizuje stan czasu w shm*/
@@ -206,7 +214,7 @@ static pid_t start_clock_process(SharedState *stan) {
         int left = CZAS_PRZED_MECZEM - (int)(now - start);
         if (left <= 0) break;
         stan->czas_pozostaly = left;
-        sleep(1);
+        //sleep(1);
     }
 
     /* Start meczu*/
@@ -222,7 +230,7 @@ static pid_t start_clock_process(SharedState *stan) {
         int left = CZAS_MECZU - (int)(now - start);
         if (left <= 0) break;
         stan->czas_pozostaly = left;
-        sleep(1);
+        //sleep(1);
     }
 
     /* Koniec meczu zegar kończy działanie*/
@@ -372,7 +380,7 @@ int main() {
     /* Zegar meczu uruchamia tylko master*/
     pid_t zegar_pid = -1;
     if (!stan->ewakuacja_trwa && stan->status_meczu == 0) {
-        zegar_pid = start_clock_process(stan);
+        zegar_pid = start_clock_process(stan, semid);
     }
 
     printf("Komendy: 1-stop, 2-start, 3-ewakuacja\n");

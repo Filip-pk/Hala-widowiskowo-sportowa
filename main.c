@@ -1,20 +1,12 @@
 #include "common.h"
 #include <sys/wait.h>
 
-#define MAX_PROC K
 /*
  * Zadaniem pliku jest:
  *  1) podpiąć IPC (shm/sem/msg) utworzone wcześniej przez ./setup,
  *  2) uruchomić procesy: kierownik, pracownicy sektorów, kasjerzy,
  *  3) generować procesy kibiców w sposób kontrolowany (limit MAX_PROC),
  *  4) na końcu zebrać wszystkie dzieci.
- *
- * Dlaczego limit MAX_PROC + waitpid(WNOHANG)?
- *  - Kibiców jest dużo a generator robi K*1.5 prób,
- *  - gdyby odpalić wszystkich naraz, system dostałby burst tysięcy procesów,
- *    a semafory/kolejki nie miałyby sensu (wszystko w tym samym momencie).
- *  - dlatego main dba o to, by maksymalnie K procesów dzieci było aktywnych
- *    jednocześnie, a zakończone procesy są zbierane (żeby nie robić zombie).
  */
 
 static volatile sig_atomic_t g_stop = 0;
@@ -46,6 +38,11 @@ static void request_shutdown(SharedState *stan, int semid) {
 
 int main() {
     setbuf(stdout, NULL);
+
+    if (K > MAX_PROC - 1000) {
+        fprintf(stderr, "Zdefiniowano za duzo kibicow. W common.h zmien K na liczbę z przedziału od 1 do %d\n", MAX_PROC-1000);
+        return 1;
+    }
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -96,11 +93,19 @@ int main() {
  *
  * Cel: realistyczny równoległy dostęp do wspólnego stanu -> shm + semafory.
  */
-
+ 
+    if (!reserve_process_slot(stan, semid)) {
+        fprintf(stderr, "Osiagnieto limit procesow\n");
+        if (shmdt(stan) == -1) warn_errno("shmdt");
+        return 1;
+    }
     /* Start procesu kierownika. */
     /* fork(): tworzy proces*/
     pid_t pid = fork();
-    if (pid == -1) die_errno("fork(kierownik)");
+    if (pid == -1) {
+        rollback_process_slot(stan, semid);
+        die_errno("fork(kierownik)");
+    }
     if (pid == 0) {
         /* exec(): uruchamia program ./kierownik*/
         execl("./kierownik", "kierownik", NULL);
@@ -109,9 +114,18 @@ int main() {
 
     /* Start 8 pracowników*/
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
+        if (!reserve_process_slot(stan, semid)) {
+            fprintf(stderr, "Osiagnieto limit procesow\n");
+            request_shutdown(stan, semid);
+            g_stop = 1;
+            break;
+        }
         /* fork(): tworzy proces*/
         pid_t p = fork();
-        if (p == -1) die_errno("fork(pracownik)");
+        if (p == -1) {
+            rollback_process_slot(stan, semid);
+            die_errno("fork(pracownik)");
+        }
         if (p == 0) {
             char b[10];
             sprintf(b, "%d", i);
@@ -123,9 +137,19 @@ int main() {
 
     /* Start kasjerów*/
     for (int i = 0; i < LICZBA_KAS; i++) {
+        if (g_stop) break;
+        if (!reserve_process_slot(stan, semid)) {
+            fprintf(stderr, "Osiagnieto limit procesow\n");
+            request_shutdown(stan, semid);
+            g_stop = 1;
+            break;
+        }
         /* fork(): tworzy proces*/
         pid_t p = fork();
-        if (p == -1) die_errno("fork(kasjer)");
+        if (p == -1) {
+            rollback_process_slot(stan, semid);
+            die_errno("fork(kasjer)");
+        }
         if (p == 0) {
             char b[10];
             sprintf(b, "%d", i);
@@ -139,9 +163,6 @@ int main() {
  * =================
  * GENERATOR KIBICÓW
  * =================
- * Tworzymy więcej „prób” niż miejsc (K * 1.5), bo
- * chcemy, żeby system kas i bramek miał realne obciążenie.
- *
  * VIP:
  *  - limit max_vip ~ 0.3% K,
  *  - VIP jest losowany
@@ -151,12 +172,14 @@ int main() {
  */
 
     /* Generator kibiców*/
-    int total_kibicow = (int)(K * 1.05);
+
+    
+    int total_kibicow = (int)(K);
     int active = 0, vip_cnt = 0;
 
     if (time(NULL) == (time_t)-1) warn_errno("time");
     srand((unsigned)time(NULL));
-    sleep(1);
+    //sleep(1);
 
     for (int i = 0; i < total_kibicow; i++) {
         /* Jeśli Ctrl+C, kończymy generowanie i przechodzimy do sprzątania*/
@@ -196,7 +219,7 @@ int main() {
         if (stan->ewakuacja_trwa) break;
         if (stan->sprzedaz_zakonczona) break;
 
-        /*VIP losowo (~0.3%) albo wymuszeni na końcu, żeby dobić do max_vip*/
+        /*VIP losowo (~0.3%)*/
         int is_vip = 0;
         if (stan->standard_sold_out) {
             if (vip_cnt < max_vip) {
@@ -214,10 +237,18 @@ int main() {
             }
         }
 
+        
+        
+        if (!reserve_process_slot(stan, semid)) {
+            printf("Limit procesow osiagniety — koncze generowanie.\n");
+            fflush(stdout);
+            break;
+        }
         /* Tworzymy proces kibica*/
         /* fork(): tworzy proces*/
         pid_t pk = fork();
         if (pk == -1) {
+            rollback_process_slot(stan, semid);
             warn_errno("fork(kibic)");
             request_shutdown(stan, semid);
             g_stop = 1;
@@ -238,7 +269,7 @@ int main() {
         }
 
         active++;
-        usleep(10000 + (rand() % 1000)); /* nie chcemy odpalić wszystkiego naraz*/
+        //usleep(1000 + (rand() % 1000)); /* nie chcemy odpalić wszystkiego naraz*/
     }
 
     if (g_stop) {
@@ -270,7 +301,7 @@ int main() {
                 break;
             }
 
-            usleep(20000);
+            //usleep(2000);
             if (++spin == 100) {
                 if (killpg(getpgrp(), SIGKILL) == -1 && errno != ESRCH) {
                     warn_errno("killpg(SIGKILL)");

@@ -57,7 +57,10 @@ static inline void die_errno(const char *ctx) {
  * ========================= */
 
 /* K – liczba kibicow. */
-#define K 500
+#define K 10000
+
+// Globalny limit liczby procesów, które wolno UTWORZYĆ w całej symulacji.
+#define MAX_PROC 11000
 
 /* Sektory standardowe*/
 #define LICZBA_SEKTOROW 8
@@ -71,7 +74,7 @@ static inline void die_errno(const char *ctx) {
 /* Maksymalna liczba osób jednocześnie w jednej bramce*/
 #define MAX_NA_STANOWISKU 3
 
-/* Licznik prób wejścia kibica*/
+/* Licznik cierpliwości kibica*/
 #define LIMIT_CIERPLIWOSCI 5
 
 /* Czas do rozpoczęcia meczu w sekundach*/
@@ -154,7 +157,53 @@ typedef struct {
     int cnt_opiekun;
     int cnt_kolega;
     int cnt_agresja;
+
+    // Licznik wszystkich UTWORZONYCH procesów (globalnie dla całej symulacji).
+    // Służy do zatrzymania dalszego forka gdy dobijemy do MAX_PROC.
+    int active_proc;
 } SharedState;
+
+
+// Rezerwuje "slot" na nowy proces (atomowo): jeśli licznik dobił do MAX_PROC,
+// zwraca 0 i NIE zwiększa licznika. W przeciwnym razie zwiększa i zwraca 1.
+static inline int reserve_process_slot(SharedState *stan, int semid) {
+    struct sembuf lock = {0, -1, 0};
+    struct sembuf unlock = {0, +1, 0};
+
+    while (semop(semid, &lock, 1) == -1) {
+        if (errno == EINTR) continue;
+        return 0;
+    }
+
+    int ok = 0;
+    if (stan->active_proc < MAX_PROC) {
+        stan->active_proc++;
+        ok = 1;
+    }
+
+    while (semop(semid, &unlock, 1) == -1) {
+        if (errno == EINTR) continue;
+        break;
+    }
+    return ok;
+}
+
+static inline void rollback_process_slot(SharedState *stan, int semid) {
+    struct sembuf lock = {0, -1, 0};
+    struct sembuf unlock = {0, +1, 0};
+
+    while (semop(semid, &lock, 1) == -1) {
+        if (errno == EINTR) continue;
+        return;
+    }
+
+    if (stan->active_proc > 0) stan->active_proc--;
+
+    while (semop(semid, &unlock, 1) == -1) {
+        if (errno == EINTR) continue;
+        break;
+    }
+}
 
 /* =========================
  * Komunikaty kolejki

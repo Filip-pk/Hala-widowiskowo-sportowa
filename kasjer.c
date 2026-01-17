@@ -68,9 +68,11 @@ static int all_sold_out(SharedState *stan, int limit_sektor, int limit_vip) {
  * Uruchamia dodatkowego kibica kolege gdy sprzedano 2 bilety
  * fork(): tworzy nowy proces
  */
-static int spawn_friend_kibic(int friend_id) {
+// UWAGA: slot na proces kolegi MUSI być już zarezerwowany (reserve_process_slot).
+static int spawn_friend_kibic_reserved(SharedState *stan, int semid, int friend_id) {
     pid_t pid = fork();
     if (pid == -1) {
+        rollback_process_slot(stan, semid);
         warn_errno("fork(spawn_friend_kibic)");
         return 0;
     }
@@ -164,7 +166,7 @@ int main(int argc, char *argv[]) {
 
         /* Jeśli ta kasa jest wyłączona, kasjer “śpi" i tylko sprawdza stan*/
         if (stan->aktywne_kasy[id] == 0) {
-            usleep(100000);
+            //usleep(10000);
             continue;
         }
 
@@ -261,6 +263,7 @@ int main(int argc, char *argv[]) {
             if (r != -1) {
                 klient_typ = 2;
                 kibic_id = req.kibic_id;
+
                 sem_op(semid, SEM_KASY, -1);
                 if (stan->kolejka_zwykla > 0) stan->kolejka_zwykla--;
                 sem_op(semid, SEM_KASY, 1);
@@ -271,14 +274,14 @@ int main(int argc, char *argv[]) {
         }
 
         if (!klient_typ) {
-            usleep(50000);
+            //usleep(5000);
             continue;
         }
 
         if (stan->ewakuacja_trwa) break;
         if (stan->sprzedaz_zakonczona) break;
 
-        usleep(100000);
+        //usleep(10000);
 
         if (klient_typ == 1) {
             int sektor = -1;
@@ -335,6 +338,7 @@ int main(int argc, char *argv[]) {
         int sektor = -1;
         int ile_sprzedane = 1;
         int friend_id = -1;
+        int friend_slot_reserved = 0; 
         int set_standard_now = 0;
 
         /* Wybór sektora: start od losowego indeksu*/
@@ -342,13 +346,21 @@ int main(int argc, char *argv[]) {
         for (int i = 0; i < LICZBA_SEKTOROW; i++) {
             int s = (start + i) % LICZBA_SEKTOROW;
 
+            int chciane = (rand() % 2) + 1; // 1 albo 2
+            int reserved = 0;
+
+            // Jeśli klient chce 2 bilety, to rezerwujemy slot na proces kolegi
+            // ZANIM sprzedamy drugi bilet. Jak się nie da -> sprzedajemy tylko 1.
+            if (chciane == 2) {
+                reserved = reserve_process_slot(stan, semid); // lock SEM_SHM wewnątrz
+            }
+
             sem_op(semid, SEM_SHM, -1);
             if (stan->sprzedane_bilety[s] < limit_sektor) {
-                int chciane = (rand() % 2) + 1;
                 int ile = 1;
 
                 /* Sprzedaż 2 biletów*/
-                if (chciane == 2 && stan->sprzedane_bilety[s] + 2 <= limit_sektor) {
+                if (reserved && stan->sprzedane_bilety[s] + 2 <= limit_sektor) {
                     ile = 2;
                 }
 
@@ -359,6 +371,7 @@ int main(int argc, char *argv[]) {
                 /* Przy 2 biletach generujemy ID kolegi*/
                 if (ile == 2) {
                     friend_id = stan->next_kibic_id++;
+                    friend_slot_reserved = 1; // trzymamy zarezerwowany slot do forka
                 }
 
                 /* Jeśli to była ostatnia możliwa sprzedaż standardu -> sold out*/
@@ -366,30 +379,32 @@ int main(int argc, char *argv[]) {
                     stan->standard_sold_out = 1;
                     set_standard_now = 1;
                 }
+
                 sem_op(semid, SEM_SHM, 1);
 
-                if (set_standard_now) {
-                    printf(CLR_YELLOW "[SYSTEM] STANDARD SOLD OUT - kończymy obsługę zwykłych kas." CLR_RESET "\n");
-                    fflush(stdout);
-
-                    sem_op(semid, SEM_KASY, -1);
-                    stan->kolejka_zwykla = 0;
-                    sem_op(semid, SEM_KASY, 1);
-
-                    cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_STD_REQ);
+                if (reserved && ile == 1) {
+                    rollback_process_slot(stan, semid);
                 }
-
-                if (ile == 2) {
-                    printf("[KASA %d] Sprzedano 2 bilety do sektora %d (drugi dla kolegi %d).\n",
-                           id, s, friend_id);
-                } else {
-                    printf("[KASA %d] Sprzedano 1 bilet do sektora %d.\n", id, s);
-                }
-                fflush(stdout);
 
                 break;
             }
+
             sem_op(semid, SEM_SHM, 1);
+
+            if (reserved) {
+                rollback_process_slot(stan, semid);
+            }
+        }
+
+        if (set_standard_now) {
+            printf(CLR_YELLOW "[SYSTEM] STANDARD SOLD OUT - kończymy obsługę zwykłych kas." CLR_RESET "\n");
+            fflush(stdout);
+
+            sem_op(semid, SEM_KASY, -1);
+            stan->kolejka_zwykla = 0;
+            sem_op(semid, SEM_KASY, 1);
+
+            cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_STD_REQ);
         }
 
         /* Jeśli nie udało się znaleźć miejsca w żadnym sektorze -> sold out*/
@@ -456,15 +471,31 @@ int main(int argc, char *argv[]) {
  * friend_id pochodzi ze wspólnego licznika next_kibic_id w shm,
  * żeby nie kolidował z ID kibiców generowanych w main().
  */
-
-        /* Jeśli była para biletów: odpalamy proces kolegi i wysyłamy mu bilet. */
+        // Tu dopiero tworzymy kolegę
         int friend_spawned = 0;
-        if (friend_id != -1 && ile_sprzedane == 2) {
-            friend_spawned = spawn_friend_kibic(friend_id);
+        if (friend_id != -1 && ile_sprzedane == 2 && friend_slot_reserved) {
+            friend_spawned = spawn_friend_kibic_reserved(stan, semid, friend_id);
+
+            // Jeśli fork padł, cofamy drugi bilet, żeby nie było "biletu-ducha"
+            if (!friend_spawned) {
+                sem_op(semid, SEM_SHM, -1);
+                if (stan->sprzedane_bilety[sektor] > 0) stan->sprzedane_bilety[sektor]--;
+                sem_op(semid, SEM_SHM, 1);
+
+                ile_sprzedane = 1;
+                friend_id = -1;
+            }
         }
 
+        if (ile_sprzedane == 2 && friend_spawned && friend_id != -1) {
+            printf("[KASA %d] Sprzedano 2 bilety do sektora %d (drugi dla kolegi %d).\n", id, sektor, friend_id);
+        } else {
+            printf("[KASA %d] Sprzedano 1 bilet do sektora %d.\n", id, sektor);
+        }
+        fflush(stdout);
+
         send_ticket(msgid_ticket, kibic_id, sektor);
-        if (friend_spawned) {
+        if (friend_spawned && friend_id != -1) {
             send_ticket(msgid_ticket, friend_id, sektor);
         }
     }
