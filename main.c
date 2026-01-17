@@ -279,7 +279,7 @@ int main() {
 
         active++;
         generated++;
-        usleep(10000 + (rand() % 1000)); /* nie chcemy odpalić wszystkiego naraz*/
+        usleep(1000 + (rand() % 1000)); /* nie chcemy odpalić wszystkiego naraz*/
     }
 
     /* Jeśli mecz zakończył się zanim wygenerowaliśmy wszystkich kibiców,
@@ -328,7 +328,7 @@ int main() {
                 break;
             }
 
-            usleep(20000);
+            usleep(2000);
             if (++spin == 100) {
                 if (killpg(getpgrp(), SIGKILL) == -1 && errno != ESRCH) {
                     warn_errno("killpg(SIGKILL)");

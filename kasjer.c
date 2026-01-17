@@ -166,7 +166,7 @@ int main(int argc, char *argv[]) {
 
         /* Jeśli ta kasa jest wyłączona, kasjer “śpi" i tylko sprawdza stan*/
         if (stan->aktywne_kasy[id] == 0) {
-            usleep(100000);
+            usleep(10000);
             continue;
         }
 
@@ -274,14 +274,14 @@ int main(int argc, char *argv[]) {
         }
 
         if (!klient_typ) {
-            usleep(50000);
+            usleep(5000);
             continue;
         }
 
         if (stan->ewakuacja_trwa) break;
         if (stan->sprzedaz_zakonczona) break;
 
-        usleep(100000);
+        usleep(10000);
 
         if (klient_typ == 1) {
             int sektor = -1;
