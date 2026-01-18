@@ -24,11 +24,14 @@ union semun {
  */
 
 
+// Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
 static void sem_op(int semid, int idx, int op) {
     struct sembuf sb = {(unsigned short)idx, (short)op, 0};
+    // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
     while (semop(semid, &sb, 1) == -1) {
         if (errno == EINTR) continue;
         if (errno == EIDRM || errno == EINVAL) _exit(0);
+        // Kończymy z komunikatem o błędzie
         die_errno("semop");
     }
 }
@@ -41,6 +44,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
+    // Czytamy numer sektora z argumentów
     int sektor = atoi(argv[1]);
     if (sektor < 0 || sektor >= LICZBA_SEKTOROW) {
         fprintf(stderr, "Błąd: sektor poza zakresem 0..%d\n", LICZBA_SEKTOROW - 1);
@@ -49,18 +53,22 @@ int main(int argc, char *argv[]) {
 
     /* shmget(): pobiera segment pamięci współdzielonej*/
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
+    // Kończymy z komunikatem o błędzie
     if (shmid == -1) die_errno("shmget");
 
     /* msgget(): pobiera kolejkę komunikatów*/
     int msgid = msgget(KEY_MSG, 0600);
+    // Kończymy z komunikatem o błędzie
     if (msgid == -1) die_errno("msgget");
 
     /* semget(): pobiera zestaw semaforów*/
     int semid = semget(KEY_SEM, 0, 0600);
+    // Kończymy z komunikatem o błędzie
     if (semid == -1) die_errno("semget");
 
     /* shmat(): mapuje shm do pamięci procesu*/
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
+    // Kończymy z komunikatem o błędzie
     if (stan == (void*)-1) die_errno("shmat");
 
     long my_type = 10 + sektor;
@@ -90,9 +98,11 @@ int main(int argc, char *argv[]) {
          *  3 -> ewakuacja
          */
         if (msg.typ_sygnalu == 1) {
+            // Włączamy blokadę sektora na polecenie kierownika
             stan->blokada_sektora[sektor] = 1;
             /* semafor-zdarzenie: 1 = zablokowany */
             union semun a; a.val = 1;
+            // Ustawiamy wartość semafora
             if (semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a) == -1) {
                 if (errno == EIDRM || errno == EINVAL) break;
                 warn_errno("semctl");
@@ -101,9 +111,11 @@ int main(int argc, char *argv[]) {
             fflush(stdout);
 
         } else if (msg.typ_sygnalu == 2) {
+            // Wyłączamy blokadę sektora na polecenie kierownika
             stan->blokada_sektora[sektor] = 0;
             /* semafor-zdarzenie: 0 = odblokowany */
             union semun a; a.val = 0;
+            // Ustawiamy wartość semafora
             if (semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a) == -1) {
                 if (errno == EIDRM || errno == EINVAL) break;
                 warn_errno("semctl");
@@ -128,6 +140,7 @@ int main(int argc, char *argv[]) {
                żeby nikt nie utknął na czekaniu na odblokowanie. */
             stan->blokada_sektora[sektor] = 1;
             union semun a; a.val = 0;
+            // Ustawiamy wartość semafora
             if (semctl(semid, SEM_SEKTOR_BLOCK_START + sektor, SETVAL, a) == -1) {
                 if (errno == EIDRM || errno == EINVAL) break;
                 warn_errno("semctl");
@@ -140,13 +153,17 @@ int main(int argc, char *argv[]) {
 
                 /* Bramki sektora chronione semaforem sektora*/
                 sem_op(semid, sem_sektora, -1);
+                // Odczytujemy stan bramek
                 b0 = stan->bramki[sektor][0].zajetosc;
                 b1 = stan->bramki[sektor][1].zajetosc;
+                // Synchronizujemy się semaforem
                 sem_op(semid, sem_sektora, 1);
 
                 /* Licznik obecnych w sektorze*/
                 sem_op(semid, SEM_SHM, -1);
+                // Sprawdzamy ilu ludzi siedzi w sektorze
                 ob = stan->obecni_w_sektorze[sektor];
+                // Synchronizujemy się semaforem
                 sem_op(semid, SEM_SHM, 1);
 
                 /* Dopiero gdy bramki puste i nikt nie siedzi w sektorze -> sektor ewakuowany*/

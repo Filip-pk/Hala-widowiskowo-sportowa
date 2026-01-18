@@ -63,8 +63,10 @@ static int try_become_master(int semid) {
     op.sem_op = -1;
     op.sem_flg = IPC_NOWAIT | SEM_UNDO;
 
+    // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
     if (semop(semid, &op, 1) == 0) return 1;
     if (errno == EAGAIN) return 0;
+    // Kończymy z komunikatem o błędzie
     die_errno("semop(SEM_KIEROWNIK)");
     return 0;
 }
@@ -104,6 +106,7 @@ static void send_ticket(int msgid_ticket, int kibic_id, int sektor) {
 static void cancel_queue_type(int msgid_req, int msgid_ticket, long req_type) {
     MsgKolejka req;
     while (1) {
+        // Odbieramy wiadomość z kolejki
         ssize_t r = msgrcv(msgid_req, &req, sizeof(int), req_type, IPC_NOWAIT);
         if (r >= 0) {
             send_ticket(msgid_ticket, req.kibic_id, -1);
@@ -137,19 +140,25 @@ static void ewakuacja(int msgid_req, int msgid_ticket, int semid, SharedState *s
  */
 
     /* Start ewakuacji + mecz zakończony*/
+    // Ogłaszamy ewakuację
     stan->ewakuacja_trwa = 1;
+    // Ustawiamy status meczu
     stan->status_meczu = 2;
+    // Aktualizujemy odliczanie
     stan->czas_pozostaly = 0;
 
     union semun a;
     a.val = 0;
+    // Ustawiamy wartość semafora
     if (semctl(semid, SEM_EWAKUACJA, SETVAL, a) == -1) {
         if (errno == EIDRM || errno == EINVAL) return;
         warn_errno("semctl");
     }
 
+    // Iterujemy po wszystkich sektorach
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
         a.val = 0;
+        // Ustawiamy wartość semafora
         if (semctl(semid, SEM_SEKTOR_BLOCK_START + i, SETVAL, a) == -1) {
             if (errno == EIDRM || errno == EINVAL) return;
             warn_errno("semctl");
@@ -159,8 +168,10 @@ static void ewakuacja(int msgid_req, int msgid_ticket, int semid, SharedState *s
     cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_VIP_REQ);
     cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_STD_REQ);
 
+    // Iterujemy po wszystkich sektorach
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
         MsgSterujacy msg = {10 + i, 3, i};
+        // Wysyłamy wiadomość do kolejki
         if (msgsnd(msgid_req, &msg, sizeof(int) * 2, 0) == -1) {
             if (errno == EIDRM || errno == EINVAL) return;
             warn_errno("msgsnd(ewakuacja)");
@@ -174,6 +185,7 @@ static void ewakuacja(int msgid_req, int msgid_ticket, int semid, SharedState *s
     int raporty = 0;
     while (raporty < LICZBA_SEKTOROW) {
         MsgSterujacy rap;
+        // Odbieramy wiadomość z kolejki
         ssize_t res = msgrcv(msgid_req, &rap, sizeof(int) * 2, 99, 0);
         if (res >= 0) {
             printf("[RAPORT] Sektor %d pusty\n", rap.sektor_id);
@@ -187,6 +199,7 @@ static void ewakuacja(int msgid_req, int msgid_ticket, int semid, SharedState *s
         }
     }
 
+    // Sprawdzamy ilu ludzi siedzi w sektorze
     while (stan->obecni_w_sektorze[SEKTOR_VIP] > 0) {
         usleep(10000);
     }
@@ -196,6 +209,7 @@ static void ewakuacja(int msgid_req, int msgid_ticket, int semid, SharedState *s
 }
 
 static pid_t start_clock_process(SharedState *stan, int semid) {
+    // Sprawdzamy czy wolno jeszcze tworzyć procesy
     if (!reserve_process_slot(stan, semid)) {
         printf("Limit procesow osiagniety\n");
         fflush(stdout);
@@ -204,42 +218,54 @@ static pid_t start_clock_process(SharedState *stan, int semid) {
     /* fork(): tworzy proces potomny, tu: zegar*/
     pid_t zegar_pid = fork();
     if (zegar_pid == -1) {
+        // Cofamy rezerwację miejsca na proces
         rollback_process_slot(stan, semid);
+        // Kończymy z komunikatem o błędzie
         die_errno("fork(zegar)");
     }
     if (zegar_pid != 0) return zegar_pid;
 
     /* Dziecko: aktualizuje stan czasu w shm*/
     time_t start = time(NULL);
+    // Kończymy z komunikatem o błędzie
     if (start == (time_t)-1) die_errno("time");
 
     while (1) {
         time_t now = time(NULL);
+        // Kończymy z komunikatem o błędzie
         if (now == (time_t)-1) die_errno("time");
         int left = CZAS_PRZED_MECZEM - (int)(now - start);
         if (left <= 0) break;
+        // Aktualizujemy odliczanie
         stan->czas_pozostaly = left;
         sleep(1);
     }
 
     /* Start meczu*/
+    // Ustawiamy status meczu
     stan->status_meczu = 1;
+    // Aktualizujemy odliczanie
     stan->czas_pozostaly = CZAS_MECZU;
 
     start = time(NULL);
+    // Kończymy z komunikatem o błędzie
     if (start == (time_t)-1) die_errno("time");
 
     while (1) {
         time_t now = time(NULL);
+        // Kończymy z komunikatem o błędzie
         if (now == (time_t)-1) die_errno("time");
         int left = CZAS_MECZU - (int)(now - start);
         if (left <= 0) break;
+        // Aktualizujemy odliczanie
         stan->czas_pozostaly = left;
         sleep(1);
     }
 
     /* Koniec meczu zegar kończy działanie*/
+    // Ustawiamy status meczu
     stan->status_meczu = 2;
+    // Aktualizujemy odliczanie
     stan->czas_pozostaly = 0;
 
     /* exit(): kończy proces potomny*/
@@ -306,22 +332,27 @@ int main() {
 
     /* msgget(): pobiera kolejkę żądań (kibic -> kasjer, oraz sterowanie sektorami) */
     int msgid_req = msgget(KEY_MSG, 0600);
+    // Kończymy z komunikatem o błędzie
     if (msgid_req == -1) die_errno("msgget(req)");
 
     /* msgget(): pobiera kolejkę biletów (kasjer/kierownik -> kibic) */
     int msgid_ticket = msgget(KEY_MSG_TICKET, 0600);
+    // Kończymy z komunikatem o błędzie
     if (msgid_ticket == -1) die_errno("msgget(ticket)");
 
     /* semget(): pobiera istniejący zestaw semaforów*/
     int semid = semget(KEY_SEM, 0, 0600);
+    // Kończymy z komunikatem o błędzie
     if (semid == -1) die_errno("semget");
 
     /* shmget(): pobiera segment pamięci współdzielonej*/
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
+    // Kończymy z komunikatem o błędzie
     if (shmid == -1) die_errno("shmget");
 
     /* shmat(): mapuje shm do pamięci procesu*/
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
+    // Kończymy z komunikatem o błędzie
     if (stan == (void*)-1) die_errno("shmat");
 
 /*
@@ -381,13 +412,17 @@ int main() {
     }
 
     /* Stan początkowy (tylko jeśli setup wyzerował stan)*/
+    // Sprawdzamy czy trwa ewakuacja
     if (stan->status_meczu == 0 && stan->czas_pozostaly == 0 && !stan->ewakuacja_trwa) {
+        // Ustawiamy status meczu
         stan->status_meczu = 0;
+        // Aktualizujemy odliczanie
         stan->czas_pozostaly = CZAS_PRZED_MECZEM;
     }
 
     /* Zegar meczu uruchamia tylko master*/
     pid_t zegar_pid = -1;
+    // Sprawdzamy czy trwa ewakuacja
     if (!stan->ewakuacja_trwa && stan->status_meczu == 0) {
         zegar_pid = start_clock_process(stan, semid);
     }
@@ -405,6 +440,7 @@ int main() {
          */
         if (zegar_pid > 0) {
             while (1) {
+                // Zbieramy zakończone procesy potomne
                 pid_t w = waitpid(zegar_pid, NULL, WNOHANG);
                 if (w > 0) { ewakuacja(msgid_req, msgid_ticket, semid, stan); goto out; }
                 if (w == 0) break;

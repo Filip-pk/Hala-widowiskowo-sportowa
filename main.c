@@ -22,6 +22,7 @@ static int sem_op_blocking(int semid, unsigned short num, short op) {
     sb.sem_op  = op;
     sb.sem_flg = 0;
 
+    // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
     while (semop(semid, &sb, 1) == -1) {
         if (errno == EINTR) continue;
         return -1;
@@ -31,7 +32,9 @@ static int sem_op_blocking(int semid, unsigned short num, short op) {
 
 static void request_shutdown(SharedState *stan, int semid) {
     if (sem_op_blocking(semid, SEM_SHM, -1) == -1) return;
+    // Ustawiamy globalny koniec sprzedaży
     stan->sprzedaz_zakonczona = 1;
+    // Ogłaszamy ewakuację
     stan->ewakuacja_trwa = 1;
     (void)sem_op_blocking(semid, SEM_SHM, +1);
 }
@@ -63,15 +66,18 @@ int main() {
 
     /* semget(): pobiera istniejący zestaw semaforów*/
     int semid = semget(KEY_SEM, 0, 0600);
+    // Kończymy z komunikatem o błędzie
     if (semid == -1) die_errno("semget");
 
     /* msgget(): pobiera istniejącą kolejkę komunikatów*/
     int msgid = msgget(KEY_MSG, 0600);
+    // Kończymy z komunikatem o błędzie
     if (msgid == -1) die_errno("msgget");
     (void)msgid;
 
     /* shmat(): mapuje shm do pamięci procesu, żeby czytać/ustawiać stan symulacji*/
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
+    // Kończymy z komunikatem o błędzie
     if (stan == (void*)-1) die_errno("shmat");
 
     /* Limit VIP*/
@@ -94,6 +100,7 @@ int main() {
  * Cel: realistyczny równoległy dostęp do wspólnego stanu -> shm + semafory.
  */
  
+    // Sprawdzamy czy wolno jeszcze tworzyć procesy
     if (!reserve_process_slot(stan, semid)) {
         fprintf(stderr, "Osiagnieto limit procesow\n");
         if (shmdt(stan) == -1) warn_errno("shmdt");
@@ -103,7 +110,9 @@ int main() {
     /* fork(): tworzy proces*/
     pid_t pid = fork();
     if (pid == -1) {
+        // Cofamy rezerwację miejsca na proces
         rollback_process_slot(stan, semid);
+        // Kończymy z komunikatem o błędzie
         die_errno("fork(kierownik)");
     }
     if (pid == 0) {
@@ -114,6 +123,7 @@ int main() {
 
     /* Start 8 pracowników*/
     for (int i = 0; i < LICZBA_SEKTOROW; i++) {
+        // Sprawdzamy czy wolno jeszcze tworzyć procesy
         if (!reserve_process_slot(stan, semid)) {
             fprintf(stderr, "Osiagnieto limit procesow\n");
             request_shutdown(stan, semid);
@@ -123,7 +133,9 @@ int main() {
         /* fork(): tworzy proces*/
         pid_t p = fork();
         if (p == -1) {
+            // Cofamy rezerwację miejsca na proces
             rollback_process_slot(stan, semid);
+            // Kończymy z komunikatem o błędzie
             die_errno("fork(pracownik)");
         }
         if (p == 0) {
@@ -138,6 +150,7 @@ int main() {
     /* Start kasjerów*/
     for (int i = 0; i < LICZBA_KAS; i++) {
         if (g_stop) break;
+        // Sprawdzamy czy wolno jeszcze tworzyć procesy
         if (!reserve_process_slot(stan, semid)) {
             fprintf(stderr, "Osiagnieto limit procesow\n");
             request_shutdown(stan, semid);
@@ -147,7 +160,9 @@ int main() {
         /* fork(): tworzy proces*/
         pid_t p = fork();
         if (p == -1) {
+            // Cofamy rezerwację miejsca na proces
             rollback_process_slot(stan, semid);
+            // Kończymy z komunikatem o błędzie
             die_errno("fork(kasjer)");
         }
         if (p == 0) {
@@ -201,6 +216,7 @@ int main() {
                 if (g_stop) break;
                 continue;
             }
+            // Zbieramy zakończone procesy potomne
             if (errno != ECHILD) warn_errno("waitpid(WNOHANG)");
             break;
         }
@@ -230,6 +246,7 @@ int main() {
 
         /*VIP losowo (~0.3%)*/
         int is_vip = 0;
+        // Sprawdzamy czy standard jest już wyprzedany
         if (stan->standard_sold_out) {
             if (vip_cnt < max_vip) {
                 is_vip = 1;
@@ -248,6 +265,7 @@ int main() {
 
         
         
+        // Sprawdzamy czy wolno jeszcze tworzyć procesy
         if (!reserve_process_slot(stan, semid)) {
             printf("Limit procesow osiagniety — koncze generowanie.\n");
             fflush(stdout);
@@ -257,6 +275,7 @@ int main() {
         /* fork(): tworzy proces*/
         pid_t pk = fork();
         if (pk == -1) {
+            // Cofamy rezerwację miejsca na proces
             rollback_process_slot(stan, semid);
             warn_errno("fork(kibic)");
             request_shutdown(stan, semid);
@@ -286,6 +305,7 @@ int main() {
      * to nie chcemy wisieć w wait()*/
     int ewakuacja_now = 0;
     if (sem_op_blocking(semid, SEM_SHM, -1) == 0) {
+        // Sprawdzamy czy trwa ewakuacja
         ewakuacja_now = stan->ewakuacja_trwa;
         (void)sem_op_blocking(semid, SEM_SHM, +1);
     } else {
@@ -328,6 +348,7 @@ int main() {
      */
     int spin = 0;
     while (1) {
+        // Zbieramy zakończone procesy potomne
         pid_t w = waitpid(-1, NULL, WNOHANG);
         if (w > 0) continue;
 
@@ -352,6 +373,7 @@ int main() {
         if (errno == EINTR) continue;
         if (errno == ECHILD) break;
 
+        // Zbieramy zakończone procesy potomne
         warn_errno("waitpid");
         break;
     }

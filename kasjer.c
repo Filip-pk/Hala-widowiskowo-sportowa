@@ -25,9 +25,11 @@
 /*semop(): zmienia wartość semafora*/
 static void sem_op(int semid, int idx, int op) {
     struct sembuf sb = {(unsigned short)idx, (short)op, 0};
+    // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
     while (semop(semid, &sb, 1) == -1) {
         if (errno == EINTR) continue;
         if (errno == EIDRM || errno == EINVAL) _exit(0);
+        // Kończymy z komunikatem o błędzie
         die_errno("semop");
     }
 }
@@ -41,6 +43,7 @@ static void send_ticket(int msgid_ticket, int kibic_id, int sektor) {
     msg.mtype = MSGTYPE_TICKET_BASE + kibic_id;
     msg.sektor_id = sektor;
 
+    // Wysyłamy odpowiedź z biletem (albo odmowę) do konkretnego kibica na kolejkę 'ticket'
     while (msgsnd(msgid_ticket, &msg, sizeof(int), 0) == -1) {
         if (errno == EINTR) continue;
         if (errno == EIDRM || errno == EINVAL) return; // kolejka skasowana
@@ -51,7 +54,9 @@ static void send_ticket(int msgid_ticket, int kibic_id, int sektor) {
 
 /* Sprawdza czy standardowe sektory są wyprzedane*/
 static int standard_sold_out(SharedState *stan, int limit_sektor) {
+    // Iterujemy po wszystkich sektorach (0..7)
     for (int s = 0; s < LICZBA_SEKTOROW; s++) {
+        // Odczytujemy liczbę sprzedanych biletów
         if (stan->sprzedane_bilety[s] < limit_sektor) return 0;
     }
     return 1;
@@ -60,6 +65,7 @@ static int standard_sold_out(SharedState *stan, int limit_sektor) {
 /* Sprawdza czy standard oraz VIP wyprzedane*/
 static int all_sold_out(SharedState *stan, int limit_sektor, int limit_vip) {
     if (!standard_sold_out(stan, limit_sektor)) return 0;
+    // Odczytujemy liczbę sprzedanych biletów
     if (stan->sprzedane_bilety[SEKTOR_VIP] < limit_vip) return 0;
     return 1;
 }
@@ -70,8 +76,10 @@ static int all_sold_out(SharedState *stan, int limit_sektor, int limit_vip) {
  */
 // UWAGA: slot na proces kolegi MUSI być już zarezerwowany (reserve_process_slot).
 static int spawn_friend_kibic_reserved(SharedState *stan, int semid, int friend_id) {
+    // Tworzymy proces potomny
     pid_t pid = fork();
     if (pid == -1) {
+        // Cofamy rezerwację miejsca na proces
         rollback_process_slot(stan, semid);
         warn_errno("fork(spawn_friend_kibic)");
         return 0;
@@ -96,6 +104,7 @@ static int spawn_friend_kibic_reserved(SharedState *stan, int semid, int friend_
 static void cancel_queue_type(int msgid_req, int msgid_ticket, long req_type) {
     MsgKolejka req;
     while (1) {
+        // Odbieramy wiadomość z kolejki
         ssize_t r = msgrcv(msgid_req, &req, sizeof(int), req_type, IPC_NOWAIT);
         if (r >= 0) {
             send_ticket(msgid_ticket, req.kibic_id, -1);
@@ -117,6 +126,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
+    // Czytamy numer kasy z argumentów
     int id = atoi(argv[1]);
     if (id < 0 || id >= LICZBA_KAS) {
         fprintf(stderr, "Błąd: id kasy poza zakresem 0..%d\n", LICZBA_KAS - 1);
@@ -130,22 +140,27 @@ int main(int argc, char *argv[]) {
     /* Podpinamy IPC: shm + sem + msg*/
     /* shmget(): pobiera istniejący segment pamięci współdzielonej*/
     int shmid = shmget(KEY_SHM, sizeof(SharedState), 0600);
+    // Kończymy z komunikatem o błędzie
     if (shmid == -1) die_errno("shmget");
 
     /* semget(): pobiera istniejący zestaw semaforów*/
     int semid = semget(KEY_SEM, 0, 0600);
+    // Kończymynz komunikatem o błędzie
     if (semid == -1) die_errno("semget");
 
     /* msgget(): pobiera kolejkę żądań (kibic -> kasjer) */
     int msgid_req = msgget(KEY_MSG, 0600);
+    // Kończymy z komunikatem o błędzie
     if (msgid_req == -1) die_errno("msgget(req)");
 
     /* msgget(): pobiera kolejkę biletów (kasjer -> kibic) */
     int msgid_ticket = msgget(KEY_MSG_TICKET, 0600);
+    // Kończymy z komunikatem o błędzie
     if (msgid_ticket == -1) die_errno("msgget(ticket)");
 
     /* shmat(): mapuje shm do pamięci procesu*/
     SharedState *stan = (SharedState*)shmat(shmid, NULL, 0);
+    // Kończymy z komunikatem o błędzie
     if (stan == (void*)-1) die_errno("shmat");
 
     /* Limity sprzedaży*/
@@ -161,7 +176,9 @@ int main(int argc, char *argv[]) {
      *  - przydziela sektor, ewentualnie tworzy kolegę jeśli kupiono 2 bilety
      */
     while (1) {
+        // Sprawdzamy czy trwa ewakuacja
         if (stan->ewakuacja_trwa) break;
+        // Sprawdzamy czy sprzedaż została już zakończona
         if (stan->sprzedaz_zakonczona) break;
 
         /* Jeśli ta kasa jest wyłączona, kasjer “śpi" i tylko sprawdza stan*/
@@ -186,23 +203,29 @@ int main(int argc, char *argv[]) {
  */
 
         /* Sekcja do zarządzania aktywnymi kasami*/
+        // Blokujemy dane kas/kolejek, żeby kasjerzy i kibice nie popsuli liczników kolejki
         sem_op(semid, SEM_KASY, -1);
 
+        // Sprawdzamy jak długa jest kolejka VIP
         int q_vip = stan->kolejka_vip;
+        // Sprawdzamy długość kolejki standard
         int q_std = stan->standard_sold_out ? 0 : stan->kolejka_zwykla;
         int total_queue = q_vip + q_std;
 
         int N = 0;
+        // Włączamy/wyłączamy konkretną kasę
         for (int i = 0; i < LICZBA_KAS; i++) if (stan->aktywne_kasy[i]) N++;
 
         /* Auto-zamykanie kas: gdy mało ludzi, nadmiarowe kasy się wyłączają*/
         int prog_zamykania = k_10 * (N - 1);
         if (N > 2 && total_queue < prog_zamykania) {
             if (id > 1) {
+                // Wyłączamy konkretną kasę
                 stan->aktywne_kasy[id] = 0;
                 printf(CLR_RED "[KASA %d] ZAMYKAM SIĘ (kolejka=%d, próg=%d)" CLR_RESET "\n",
                        id, total_queue, prog_zamykania);
                 fflush(stdout);
+                // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
                 sem_op(semid, SEM_KASY, 1);
                 continue;
             }
@@ -211,8 +234,11 @@ int main(int argc, char *argv[]) {
         /* Auto-otwieranie kas: gdy kolejka rośnie, włączamy dodatkową kasę*/
         int wymagane_kasy = (total_queue / k_10) + 1;
         if (wymagane_kasy > N && N < LICZBA_KAS) {
+            // Przeliczamy ile kas jest aktywnych / szukamy wolnej kasy do otwarcia
             for (int i = 0; i < LICZBA_KAS; i++) {
+                // Sprawdzamy czy dana kasa jest aktywna
                 if (stan->aktywne_kasy[i] == 0) {
+                    // Włączamy konkretną kasę
                     stan->aktywne_kasy[i] = 1;
                     printf(CLR_GREEN "[SYSTEM] OTWIERAM KASĘ %d (kolejka=%d, aktywne=%d->%d)" CLR_RESET "\n",
                            i, total_queue, N, N + 1);
@@ -222,6 +248,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
         sem_op(semid, SEM_KASY, 1);
 
         MsgKolejka req;
@@ -249,7 +276,9 @@ int main(int argc, char *argv[]) {
 
                 /* Aktualizacja licznika kolejki*/
                 sem_op(semid, SEM_KASY, -1);
+                // Zmniejszamy licznik kolejki VIP
                 if (stan->kolejka_vip > 0) stan->kolejka_vip--;
+                // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
                 sem_op(semid, SEM_KASY, 1);
             } else {
                 if (errno != ENOMSG && errno != EINTR && errno != EIDRM && errno != EINVAL)
@@ -257,6 +286,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        // Sprawdzamy czy standard jest już wyprzedany
         if (!klient_typ && !stan->standard_sold_out && q_std > 0) {
             /* msgrcv(): pobiera żądanie standard bez blokowania*/
             ssize_t r = msgrcv(msgid_req, &req, sizeof(int), MSGTYPE_STD_REQ, IPC_NOWAIT);
@@ -264,8 +294,11 @@ int main(int argc, char *argv[]) {
                 klient_typ = 2;
                 kibic_id = req.kibic_id;
 
+                // Blokujemy dane kas/kolejek, żeby kasjerzy i kibice nie popsuli liczników kolejki
                 sem_op(semid, SEM_KASY, -1);
+                // Zmniejszamy licznik kolejki standard
                 if (stan->kolejka_zwykla > 0) stan->kolejka_zwykla--;
+                // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
                 sem_op(semid, SEM_KASY, 1);
             } else {
                 if (errno != ENOMSG && errno != EINTR && errno != EIDRM && errno != EINVAL)
@@ -278,7 +311,9 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        // Sprawdzamy czy trwa ewakuacja
         if (stan->ewakuacja_trwa) break;
+        // Sprawdzamy czy sprzedaż została już zakończona
         if (stan->sprzedaz_zakonczona) break;
 
         usleep(10000);
@@ -289,14 +324,18 @@ int main(int argc, char *argv[]) {
 
             /* Sprzedaż VIP + sprawdzenie sold out. */
             sem_op(semid, SEM_SHM, -1);
+            // Odczytujemy liczbę sprzedanych biletów
             if (stan->sprzedane_bilety[SEKTOR_VIP] < limit_vip) {
+                // Zwiększamy licznik sprzedanych biletów dla sektora
                 stan->sprzedane_bilety[SEKTOR_VIP]++;
                 sektor = SEKTOR_VIP;
             }
             if (all_sold_out(stan, limit_sektor, limit_vip)) {
+                // Ustawiamy globalny koniec sprzedaży – kasjerzy kończą, a generator kibiców przestaje tworzyć nowe procesy
                 if (!stan->sprzedaz_zakonczona) set_all = 1;
                 stan->sprzedaz_zakonczona = 1;
             }
+            // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
             sem_op(semid, SEM_SHM, 1);
 
             if (set_all) {
@@ -326,6 +365,7 @@ int main(int argc, char *argv[]) {
                 stan->kolejka_vip = 0;
                 stan->kolejka_zwykla = 0;
                 for (int i = 0; i < LICZBA_KAS; i++) stan->aktywne_kasy[i] = 0;
+                // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
                 sem_op(semid, SEM_KASY, 1);
 
                 cancel_queue_type(msgid_req, msgid_ticket, MSGTYPE_VIP_REQ);
@@ -343,6 +383,7 @@ int main(int argc, char *argv[]) {
 
         /* Wybór sektora: start od losowego indeksu*/
         int start = rand() % LICZBA_SEKTOROW;
+        // Iterujemy po wszystkich sektorach
         for (int i = 0; i < LICZBA_SEKTOROW; i++) {
             int s = (start + i) % LICZBA_SEKTOROW;
 
@@ -352,10 +393,13 @@ int main(int argc, char *argv[]) {
             // Jeśli klient chce 2 bilety, to rezerwujemy slot na proces kolegi
             // ZANIM sprzedamy drugi bilet. Jak się nie da -> sprzedajemy tylko 1.
             if (chciane == 2) {
+                // Rezerwujemy miejsce na nowy proces
                 reserved = reserve_process_slot(stan, semid); // lock SEM_SHM wewnątrz
             }
 
+            // Wchodzimy do sekcji krytycznej dla SharedState, żeby nikt nie zmieniał tego samego licznika naraz
             sem_op(semid, SEM_SHM, -1);
+            // Odczytujemy liczbę sprzedanych biletów
             if (stan->sprzedane_bilety[s] < limit_sektor) {
                 int ile = 1;
 
@@ -364,6 +408,7 @@ int main(int argc, char *argv[]) {
                     ile = 2;
                 }
 
+                // Zwiększamy licznik sprzedanych biletów dla sektora
                 stan->sprzedane_bilety[s] += ile;
                 sektor = s;
                 ile_sprzedane = ile;
@@ -376,22 +421,27 @@ int main(int argc, char *argv[]) {
 
                 /* Jeśli to była ostatnia możliwa sprzedaż standardu -> sold out*/
                 if (!stan->standard_sold_out && standard_sold_out(stan, limit_sektor)) {
+                    // Ustawiamy flagę 'standard wyprzedany'
                     stan->standard_sold_out = 1;
                     set_standard_now = 1;
                 }
 
+                // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
                 sem_op(semid, SEM_SHM, 1);
 
                 if (reserved && ile == 1) {
+                    // Cofamy rezerwację miejsca na proces
                     rollback_process_slot(stan, semid);
                 }
 
                 break;
             }
 
+            // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
             sem_op(semid, SEM_SHM, 1);
 
             if (reserved) {
+                // Cofamy rezerwację miejsca na proces
                 rollback_process_slot(stan, semid);
             }
         }
@@ -415,12 +465,15 @@ int main(int argc, char *argv[]) {
             sem_op(semid, SEM_SHM, -1);
             if (standard_sold_out(stan, limit_sektor)) {
                 if (!stan->standard_sold_out) set_standard = 1;
+                // Ustawiamy flagę 'standard wyprzedany'
                 stan->standard_sold_out = 1;
             }
             if (all_sold_out(stan, limit_sektor, limit_vip)) {
+                // Ustawiamy globalny koniec sprzedaży
                 stan->sprzedaz_zakonczona = 1;
                 set_all = 1;
             }
+            // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
             sem_op(semid, SEM_SHM, 1);
 
             if (set_standard) {
@@ -479,7 +532,9 @@ int main(int argc, char *argv[]) {
             // Jeśli fork padł, cofamy drugi bilet, żeby nie było "biletu-ducha"
             if (!friend_spawned) {
                 sem_op(semid, SEM_SHM, -1);
+                // Zwiększamy licznik sprzedanych biletów dla sektora
                 if (stan->sprzedane_bilety[sektor] > 0) stan->sprzedane_bilety[sektor]--;
+                // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
                 sem_op(semid, SEM_SHM, 1);
 
                 ile_sprzedane = 1;

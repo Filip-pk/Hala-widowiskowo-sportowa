@@ -37,6 +37,7 @@ static inline void warn_errno(const char *ctx) {
     fprintf(stderr, "errno=%d (%s)\n", e, strerror(e));
 }
 
+// Kończymy z komunikatem o błędzie
 static inline void die_errno(const char *ctx) {
     warn_errno(ctx);
     exit(EXIT_FAILURE);
@@ -170,17 +171,21 @@ static inline int reserve_process_slot(SharedState *stan, int semid) {
     struct sembuf lock = {0, -1, 0};
     struct sembuf unlock = {0, +1, 0};
 
+    // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
     while (semop(semid, &lock, 1) == -1) {
         if (errno == EINTR) continue;
         return 0;
     }
 
     int ok = 0;
+    // Odczytujemy licznik procesów (żeby wiedzieć czy można tworzyć kolejne role)
     if (stan->active_proc < MAX_PROC) {
+        // Zmieniamy globalny licznik utworzonych procesów
         stan->active_proc++;
         ok = 1;
     }
 
+    // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
     while (semop(semid, &unlock, 1) == -1) {
         if (errno == EINTR) continue;
         break;
@@ -188,17 +193,21 @@ static inline int reserve_process_slot(SharedState *stan, int semid) {
     return ok;
 }
 
+// Cofamy rezerwację miejsca na proces (poprzedni fork/exec się nie udał)
 static inline void rollback_process_slot(SharedState *stan, int semid) {
     struct sembuf lock = {0, -1, 0};
     struct sembuf unlock = {0, +1, 0};
 
+    // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
     while (semop(semid, &lock, 1) == -1) {
         if (errno == EINTR) continue;
         return;
     }
 
+    // Zmieniamy globalny licznik utworzonych procesów
     if (stan->active_proc > 0) stan->active_proc--;
 
+    // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
     while (semop(semid, &unlock, 1) == -1) {
         if (errno == EINTR) continue;
         break;

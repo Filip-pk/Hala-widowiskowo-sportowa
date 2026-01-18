@@ -45,6 +45,7 @@ int main() {
 
     /* shmget(): tworzy/pobiera segment pamięci współdzielonej*/
     int shmid = shmget(KEY_SHM, sizeof(SharedState), IPC_CREAT | 0600);
+    // Kończymy z komunikatem o błędzie
     if (shmid == -1) die_errno("shmget");
 
     /* shmat(): podłącza shm do przestrzeni adresowej procesu*/
@@ -59,11 +60,15 @@ int main() {
 
     /* Inicjalizacja stanu symulacji w pamięci współdzielonej*/
     memset(stan, 0, sizeof(SharedState));
+    // Zmieniamy globalny licznik utworzonych procesów
     stan->active_proc = 0;
+    // Włączamy/wyłączamy konkretne kasy
     stan->aktywne_kasy[0] = 1;
     stan->aktywne_kasy[1] = 1;
     stan->next_kibic_id = DYN_ID_START;
+    // Ustawiamy flagę 'standard wyprzedany'
     stan->standard_sold_out = 0;
+    // Ustawiamy globalny koniec sprzedaży
     stan->sprzedaz_zakonczona = 0;
     stan->cnt_weszlo = 0;
     stan->cnt_opiekun = 0;
@@ -106,6 +111,7 @@ int main() {
         }
         /* SEM_EWAKUACJA = 1 (domyślnie) */
         arg.val = v;
+        // Ustawiamy wartość semafora
         if (semctl(semid, i, SETVAL, arg) == -1) {
             warn_errno("semctl(SETVAL)");
             /* shmctl(IPC_RMID): usuwa segment shm: sprzątanie po błędzie*/
