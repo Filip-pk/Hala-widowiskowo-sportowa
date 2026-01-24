@@ -292,7 +292,7 @@ int main() {
             sprintf(r, "%d", has_raca);
 
             /* exec(): uruchamia ./kibic*/
-            execl("./kibic", "kibic", id, v, r, NULL);
+            execl("./kibic", "kibic", id, v, r, "0", NULL);
             die_errno("execl(kibic)");
         }
 

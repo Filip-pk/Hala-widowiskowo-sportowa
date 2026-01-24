@@ -532,7 +532,7 @@ int main(int argc, char *argv[]) {
             // Jeśli fork padł, cofamy drugi bilet, żeby nie było "biletu-ducha"
             if (!friend_spawned) {
                 sem_op(semid, SEM_SHM, -1);
-                // Zwiększamy licznik sprzedanych biletów dla sektora
+                // Zmniejszamy licznik sprzedanych biletów dla sektora
                 if (stan->sprzedane_bilety[sektor] > 0) stan->sprzedane_bilety[sektor]--;
                 // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
                 sem_op(semid, SEM_SHM, 1);
