@@ -42,8 +42,8 @@ static void request_shutdown(SharedState *stan, int semid) {
 int main() {
     setbuf(stdout, NULL);
 
-    if (K > MAX_PROC - 1000) {
-        fprintf(stderr, "Zdefiniowano za duzo kibicow. W common.h zmien K na liczbę z przedziału od 1 do %d\n", MAX_PROC-1000);
+    if (K > MAX_PROC - 2000) {
+        fprintf(stderr, "Zdefiniowano za duzo kibicow. W common.h zmien K na liczbę z przedziału od 1 do %d\n", MAX_PROC-2000);
         return 1;
     }
 

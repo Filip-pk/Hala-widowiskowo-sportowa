@@ -58,10 +58,10 @@ static inline void die_errno(const char *ctx) {
  * ========================= */
 
 /* K – liczba kibicow. */
-#define K 10000
+#define K 8000
 
 // Globalny limit liczby procesów, które wolno UTWORZYĆ w całej symulacji.
-#define MAX_PROC 11000
+#define MAX_PROC 12000
 
 /* Sektory standardowe*/
 #define LICZBA_SEKTOROW 8
