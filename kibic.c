@@ -235,7 +235,7 @@ static const char* team_name(int druzyna) {
  *  - typ: vip / opiekun / zwykly
  *  - sektor: docelowy sektor (0..7 albo VIP)
  */
-static void append_report(int kibic_id, int wiek, int sektor) {
+static void append_report(int kibic_id, int wiek, int sektor, int grupa) {
     const char *typ = (sektor == SEKTOR_VIP) ? "vip" : ((wiek < 15) ? "opiekun z dzieckiem" : "zwykly");
 
     /* open(): otwiera plik raportu do dopisywania*/
@@ -250,9 +250,19 @@ static void append_report(int kibic_id, int wiek, int sektor) {
         return;
     }
 
-    /* Dopisanie jednej linijki (id typ sektor)*/
+    /* Dopisanie linijki/linijek (id typ sektor)*/
     if (dprintf(fd, "%d %s %d\n", kibic_id, typ, sektor) < 0) {
         warn_errno("dprintf(raport.txt)");
+    }
+
+    /* Para (opiekun + dziecko) ma mieć 2 wpisy w raporcie, bo to 2 osoby.
+     * Opiekun dostaje „sztuczne” ID, żeby nie dublować numeru dziecka.
+     */
+    if (grupa == 2 && wiek < 15 && sektor != SEKTOR_VIP) {
+        const int opiekun_id = 200000 + kibic_id;
+        if (dprintf(fd, "%d %s %d\n", opiekun_id, typ, sektor) < 0) {
+            warn_errno("dprintf(raport.txt)");
+        }
     }
 
     if (flock(fd, LOCK_UN) == -1) warn_errno("flock(LOCK_UN)");
@@ -445,7 +455,7 @@ int main(int argc, char *argv[]) {
  *  - open(..., O_APPEND) żeby system dopisywał na koniec,
  *  - flock(LOCK_EX) żeby nie przeplatać wpisów.
  */
-    append_report(my_id, wiek, sektor);
+    append_report(my_id, wiek, sektor, grupa);
     const int is_kolega = (my_id >= DYN_ID_START);
 
 /*
