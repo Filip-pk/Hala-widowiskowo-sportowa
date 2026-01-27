@@ -203,19 +203,21 @@ static void pair_kill_guardian(void) {
 }
 
 /* Aktualizacja liczby obecnych w sektorze*/
-static void obecni_inc(SharedState *stan, int semid, int sektor) {
+static void obecni_inc(SharedState *stan, int semid, int sektor, int ile) {
     // Wchodzimy do sekcji krytycznej dla SharedState, żeby nikt nie zmieniał tego samego licznika naraz
     sem_op(semid, SEM_SHM, -1);
     // Zmieniamy licznik osób siedzących w sektorze
-    stan->obecni_w_sektorze[sektor]++;
+    stan->obecni_w_sektorze[sektor] += ile;
     // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
     sem_op(semid, SEM_SHM, 1);
 }
 
-static void obecni_dec(SharedState *stan, int semid, int sektor) {
+static void obecni_dec(SharedState *stan, int semid, int sektor, int ile) {
     sem_op(semid, SEM_SHM, -1);
     // Zmieniamy licznik osób siedzących w sektorze
-    if (stan->obecni_w_sektorze[sektor] > 0) stan->obecni_w_sektorze[sektor]--;
+    if (ile < 0) ile = -ile;
+    if (stan->obecni_w_sektorze[sektor] >= ile) stan->obecni_w_sektorze[sektor] -= ile;
+    else stan->obecni_w_sektorze[sektor] = 0;
     // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
     sem_op(semid, SEM_SHM, 1);
 }
@@ -259,10 +261,11 @@ static void append_report(int kibic_id, int wiek, int sektor) {
 }
 
 /* Statystyki kto wszedł*/
-static void bump_entered(SharedState *stan, int semid, int wiek, int is_kolega) {
+static void bump_entered(SharedState *stan, int semid, int wiek, int is_kolega, int grupa) {
     // Wchodzimy do sekcji krytycznej dla SharedState, żeby nikt nie zmieniał tego samego licznika naraz
     sem_op(semid, SEM_SHM, -1);
-    stan->cnt_weszlo++;
+    if (grupa < 1) grupa = 1;
+    stan->cnt_weszlo += grupa;
     if (wiek < 15) stan->cnt_opiekun++;
     if (is_kolega) stan->cnt_kolega++;
     // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
@@ -322,6 +325,10 @@ int main(int argc, char *argv[]) {
     srand(time(NULL) ^ (getpid() << 16));
     // Losujemy wiek kibica (dziecko < 15 oznacza wejście razem z opiekunem)
     int wiek = 10 + rand() % 60;
+    // "Koledzy" z 2 biletów (ma_juz_bilet=1) nie powinni być dziećmi, bo nie pojawiają się w kasie.
+    if (ma_juz_bilet && wiek < 15) {
+        wiek = 18 + rand() % 42;
+    }
     // Losujemy drużynę kibica (0=GOSP, 1=GOSC) – na bramkach nie wolno mieszać drużyn
     int druzyna = rand() % 2;
 
@@ -355,6 +362,9 @@ int main(int argc, char *argv[]) {
 
     // Dziecko nie porusza się bez opiekuna: uruchamiamy opiekuna jako proces-cień.
     int is_dziecko = (wiek < 15 && !is_vip);
+    // Ile "fizycznych osób" reprezentuje ten proces w modelu tłumu.
+    // Dziecko zawsze wchodzi z opiekunem => zajmują 2 miejsca.
+    int grupa = is_dziecko ? 2 : 1;
     pair_spawn_if_needed(is_dziecko, my_id, stan, semid);
 
 /*
@@ -379,18 +389,19 @@ int main(int argc, char *argv[]) {
         // Blokujemy dane kas/kolejek, żeby kasjerzy i kibice nie popsuli liczników kolejki
         sem_op(semid, SEM_KASY, -1);
         // Zwiększamy/zmniejszamy licznik kolejki VIP (ile osób aktualnie czeka na obsługę VIP)
-        if (is_vip) stan->kolejka_vip++;
+        if (is_vip) stan->kolejka_vip += grupa;
         // Zwiększamy/zmniejszamy licznik kolejki standard (ile osób stoi do zwykłych kas)
-        else stan->kolejka_zwykla++;
+        else stan->kolejka_zwykla += grupa;
         // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
         sem_op(semid, SEM_KASY, 1);
 
         MsgKolejka req;
         req.mtype = is_vip ? MSGTYPE_VIP_REQ : MSGTYPE_STD_REQ;
         req.kibic_id = my_id;
+        req.grupa = grupa;
 
         /* msgsnd(): wysyła żądanie do kolejki komunikatów*/
-        while (msgsnd(msgid_req, &req, sizeof(int), 0) == -1) {
+        while (msgsnd(msgid_req, &req, sizeof(MsgKolejka) - sizeof(long), 0) == -1) {
             if (errno == EINTR) continue;
             if (errno == EIDRM || errno == EINVAL) { pair_shutdown(); if (shmdt(stan) == -1) warn_errno("shmdt"); exit(0); }
             warn_errno("msgsnd(kolejka)");
@@ -445,14 +456,14 @@ int main(int argc, char *argv[]) {
  */
 
     if (sektor == SEKTOR_VIP) {
-        bump_entered(stan, semid, wiek, is_kolega);
+        bump_entered(stan, semid, wiek, is_kolega, 1);
         printf(CLR_YELLOW "[VIP %d] WEJŚCIE VIP" CLR_RESET "\n", my_id);
         fflush(stdout);
 
-        obecni_inc(stan, semid, SEKTOR_VIP);
+        obecni_inc(stan, semid, SEKTOR_VIP, 1);
         // Czekamy na ewakuację/koniec – ten semafor staje się 0, gdy kierownik ogłosi ewakuację
         sem_op(semid, SEM_EWAKUACJA, 0);
-        obecni_dec(stan, semid, SEKTOR_VIP);
+        obecni_dec(stan, semid, SEKTOR_VIP, 1);
 
         pair_shutdown();
         if (shmdt(stan) == -1) warn_errno("shmdt");
@@ -539,13 +550,13 @@ int main(int argc, char *argv[]) {
             }
 
             /* bramki są puste => wchodzimy jako pierwsi */
-            bump_entered(stan, semid, wiek, is_kolega);
+            bump_entered(stan, semid, wiek, is_kolega, grupa);
 
             // Zmieniamy stan bramki (zajętość + drużyna), żeby pilnować limitu 3 osób i nie mieszać drużyn
-            stan->bramki[sektor][0].zajetosc++;
+            stan->bramki[sektor][0].zajetosc += grupa;
             stan->bramki[sektor][0].druzyna = druzyna;
             // Dopisz kolejne przejście przez kontrolę (na tym liczymy 'cierpliwość' i moment agresji)
-            stan->wejscia_kontrola[sektor][druzyna]++;
+            stan->wejscia_kontrola[sektor][druzyna] += grupa;
 
             // Rezerwujemy/zwalniamy priorytet agresora – tylko jeden agresor na sektor może przejąć wejście naraz
             stan->agresor_sektora[sektor] = 0; /* odblokuj wejście kolejnym */
@@ -568,7 +579,8 @@ int main(int argc, char *argv[]) {
             // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
             sem_op(semid, sem_sektora, -1);
             // Zmieniamy stan bramki (zajętość + drużyna), żeby pilnować limitu 3 osób i nie mieszać drużyn
-            if (stan->bramki[sektor][0].zajetosc > 0) stan->bramki[sektor][0].zajetosc--;
+            if (stan->bramki[sektor][0].zajetosc >= grupa) stan->bramki[sektor][0].zajetosc -= grupa;
+            else stan->bramki[sektor][0].zajetosc = 0;
             // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
             sem_op(semid, sem_sektora, 1);
 
@@ -586,7 +598,7 @@ int main(int argc, char *argv[]) {
             int n = stan->bramki[sektor][i].zajetosc;
             int d = stan->bramki[sektor][i].druzyna;
 
-            if (n < MAX_NA_STANOWISKU) {
+            if (n + grupa <= MAX_NA_STANOWISKU) {
                 if (n == 0 || d == druzyna) { wybrane = i; break; }
                 else powod = 1;
             } else {
@@ -596,12 +608,12 @@ int main(int argc, char *argv[]) {
 
         if (wybrane != -1) {
             /* Udane wejście do bramki = liczymy jako wszedł w statystykach*/
-            bump_entered(stan, semid, wiek, is_kolega);
+            bump_entered(stan, semid, wiek, is_kolega, grupa);
 
             // Zmieniamy stan bramki (zajętość + drużyna), żeby pilnować limitu 3 osób i nie mieszać drużyn
-            stan->bramki[sektor][wybrane].zajetosc++;
+            stan->bramki[sektor][wybrane].zajetosc += grupa;
             stan->bramki[sektor][wybrane].druzyna = druzyna;
-            stan->wejscia_kontrola[sektor][druzyna]++;
+            stan->wejscia_kontrola[sektor][druzyna] += grupa;
 
             const char *tc = team_color(druzyna);
             const char *tn = team_name(druzyna);
@@ -630,7 +642,8 @@ int main(int argc, char *argv[]) {
 
             /* Aktualizacja bramki po przejściu*/
             sem_op(semid, sem_sektora, -1);
-            if (stan->bramki[sektor][wybrane].zajetosc > 0) stan->bramki[sektor][wybrane].zajetosc--;
+            if (stan->bramki[sektor][wybrane].zajetosc >= grupa) stan->bramki[sektor][wybrane].zajetosc -= grupa;
+            else stan->bramki[sektor][wybrane].zajetosc = 0;
             sem_op(semid, sem_sektora, 1);
 
             if (!stan->ewakuacja_trwa) wszedl_do_sektora = 1;
@@ -680,10 +693,10 @@ int main(int argc, char *argv[]) {
     if (wszedl_do_sektora) {
         // Razem z opiekunem w sektorze.
         pair_sync_or_die(PAIR_SEKTOR, sektor, 0);
-        obecni_inc(stan, semid, sektor);
+        obecni_inc(stan, semid, sektor, grupa);
         // Czekamy na ewakuację/koniec – ten semafor staje się 0, gdy kierownik ogłosi ewakuację
         sem_op(semid, SEM_EWAKUACJA, 0);
-        obecni_dec(stan, semid, sektor);
+        obecni_dec(stan, semid, sektor, grupa);
     }
 
     pair_shutdown();

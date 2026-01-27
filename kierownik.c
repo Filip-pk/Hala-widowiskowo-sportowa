@@ -107,7 +107,7 @@ static void cancel_queue_type(int msgid_req, int msgid_ticket, long req_type) {
     MsgKolejka req;
     while (1) {
         // Odbieramy wiadomość z kolejki
-        ssize_t r = msgrcv(msgid_req, &req, sizeof(int), req_type, IPC_NOWAIT);
+        ssize_t r = msgrcv(msgid_req, &req, sizeof(MsgKolejka) - sizeof(long), req_type, IPC_NOWAIT);
         if (r >= 0) {
             send_ticket(msgid_ticket, req.kibic_id, -1);
             continue;

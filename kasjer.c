@@ -105,7 +105,7 @@ static void cancel_queue_type(int msgid_req, int msgid_ticket, long req_type) {
     MsgKolejka req;
     while (1) {
         // Odbieramy wiadomość z kolejki
-        ssize_t r = msgrcv(msgid_req, &req, sizeof(int), req_type, IPC_NOWAIT);
+        ssize_t r = msgrcv(msgid_req, &req, sizeof(MsgKolejka) - sizeof(long), req_type, IPC_NOWAIT);
         if (r >= 0) {
             send_ticket(msgid_ticket, req.kibic_id, -1);
             continue;
@@ -189,6 +189,7 @@ int main(int argc, char *argv[]) {
 
         int klient_typ = 0; // 1=VIP, 2=STD
         int kibic_id = -1;
+        int grupa_klienta = 1; // ile "osób" reprezentuje request (dziecko+opiekun=2)
 
 /*
  * ==========================================
@@ -269,15 +270,17 @@ int main(int argc, char *argv[]) {
         /* Priorytet: VIP zawsze pierwszy*/
         if (q_vip > 0) {
             /* msgrcv(): pobiera żądanie VIP bez blokowania*/
-            ssize_t r = msgrcv(msgid_req, &req, sizeof(int), MSGTYPE_VIP_REQ, IPC_NOWAIT);
+            ssize_t r = msgrcv(msgid_req, &req, sizeof(MsgKolejka) - sizeof(long), MSGTYPE_VIP_REQ, IPC_NOWAIT);
             if (r != -1) {
                 klient_typ = 1;
                 kibic_id = req.kibic_id;
+                grupa_klienta = (req.grupa < 1) ? 1 : req.grupa;
 
                 /* Aktualizacja licznika kolejki*/
                 sem_op(semid, SEM_KASY, -1);
                 // Zmniejszamy licznik kolejki VIP
-                if (stan->kolejka_vip > 0) stan->kolejka_vip--;
+                if (stan->kolejka_vip >= grupa_klienta) stan->kolejka_vip -= grupa_klienta;
+                else stan->kolejka_vip = 0;
                 // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
                 sem_op(semid, SEM_KASY, 1);
             } else {
@@ -289,15 +292,17 @@ int main(int argc, char *argv[]) {
         // Sprawdzamy czy standard jest już wyprzedany
         if (!klient_typ && !stan->standard_sold_out && q_std > 0) {
             /* msgrcv(): pobiera żądanie standard bez blokowania*/
-            ssize_t r = msgrcv(msgid_req, &req, sizeof(int), MSGTYPE_STD_REQ, IPC_NOWAIT);
+            ssize_t r = msgrcv(msgid_req, &req, sizeof(MsgKolejka) - sizeof(long), MSGTYPE_STD_REQ, IPC_NOWAIT);
             if (r != -1) {
                 klient_typ = 2;
                 kibic_id = req.kibic_id;
+                grupa_klienta = (req.grupa < 1) ? 1 : req.grupa;
 
                 // Blokujemy dane kas/kolejek, żeby kasjerzy i kibice nie popsuli liczników kolejki
                 sem_op(semid, SEM_KASY, -1);
                 // Zmniejszamy licznik kolejki standard
-                if (stan->kolejka_zwykla > 0) stan->kolejka_zwykla--;
+                if (stan->kolejka_zwykla >= grupa_klienta) stan->kolejka_zwykla -= grupa_klienta;
+                else stan->kolejka_zwykla = 0;
                 // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
                 sem_op(semid, SEM_KASY, 1);
             } else {
@@ -325,9 +330,10 @@ int main(int argc, char *argv[]) {
             /* Sprzedaż VIP + sprawdzenie sold out. */
             sem_op(semid, SEM_SHM, -1);
             // Odczytujemy liczbę sprzedanych biletów
-            if (stan->sprzedane_bilety[SEKTOR_VIP] < limit_vip) {
+            int g = (grupa_klienta < 1) ? 1 : grupa_klienta;
+            if (stan->sprzedane_bilety[SEKTOR_VIP] + g <= limit_vip) {
                 // Zwiększamy licznik sprzedanych biletów dla sektora
-                stan->sprzedane_bilety[SEKTOR_VIP]++;
+                stan->sprzedane_bilety[SEKTOR_VIP] += g;
                 sektor = SEKTOR_VIP;
             }
             if (all_sold_out(stan, limit_sektor, limit_vip)) {
@@ -378,8 +384,9 @@ int main(int argc, char *argv[]) {
         int sektor = -1;
         int ile_sprzedane = 1;
         int friend_id = -1;
-        int friend_slot_reserved = 0; 
+        int friend_slot_reserved = 0;
         int set_standard_now = 0;
+        int para_opiekun_dziecko = (grupa_klienta == 2);
 
         /* Wybór sektora: start od losowego indeksu*/
         int start = rand() % LICZBA_SEKTOROW;
@@ -387,63 +394,59 @@ int main(int argc, char *argv[]) {
         for (int i = 0; i < LICZBA_SEKTOROW; i++) {
             int s = (start + i) % LICZBA_SEKTOROW;
 
-            int chciane = (rand() % 2) + 1; // 1 albo 2
+            int chciane = para_opiekun_dziecko ? 2 : ((rand() % 2) + 1); // 1 albo 2
             int reserved = 0;
 
-            // Jeśli klient chce 2 bilety, to rezerwujemy slot na proces kolegi
-            // ZANIM sprzedamy drugi bilet. Jak się nie da -> sprzedajemy tylko 1.
-            if (chciane == 2) {
-                // Rezerwujemy miejsce na nowy proces
+            // Rezerwujemy slot na proces "kolegi" tylko wtedy, gdy to normalna sprzedaż 2 biletów.
+            // Para opiekun+dziecko już ma drugi proces (opiekuna), więc niczego tu nie tworzymy.
+            if (!para_opiekun_dziecko && chciane == 2) {
                 reserved = reserve_process_slot(stan, semid); // lock SEM_SHM wewnątrz
             }
 
             // Wchodzimy do sekcji krytycznej dla SharedState, żeby nikt nie zmieniał tego samego licznika naraz
             sem_op(semid, SEM_SHM, -1);
-            // Odczytujemy liczbę sprzedanych biletów
-            if (stan->sprzedane_bilety[s] < limit_sektor) {
-                int ile = 1;
+            int free = limit_sektor - stan->sprzedane_bilety[s];
+            int ile = 0;
 
-                /* Sprzedaż 2 biletów*/
-                if (reserved && stan->sprzedane_bilety[s] + 2 <= limit_sektor) {
-                    ile = 2;
+            if (para_opiekun_dziecko) {
+                // Dziecko nie może wejść samo: sprzedajemy albo 2 bilety, albo nic.
+                if (free >= 2) ile = 2;
+            } else {
+                // Normalny klient: 1 bilet zawsze jeśli jest miejsce, a 2 tylko gdy mamy slot na kolegę i 2 miejsca.
+                if (free >= 1) {
+                    ile = 1;
+                    if (reserved && free >= 2) ile = 2;
                 }
+            }
 
+            if (ile > 0) {
                 // Zwiększamy licznik sprzedanych biletów dla sektora
                 stan->sprzedane_bilety[s] += ile;
                 sektor = s;
                 ile_sprzedane = ile;
 
-                /* Przy 2 biletach generujemy ID kolegi*/
-                if (ile == 2) {
+                /* Przy 2 biletach generujemy ID kolegi tylko dla zwykłego zakupu */
+                if (!para_opiekun_dziecko && ile == 2) {
                     friend_id = stan->next_kibic_id++;
                     friend_slot_reserved = 1; // trzymamy zarezerwowany slot do forka
                 }
 
                 /* Jeśli to była ostatnia możliwa sprzedaż standardu -> sold out*/
                 if (!stan->standard_sold_out && standard_sold_out(stan, limit_sektor)) {
-                    // Ustawiamy flagę 'standard wyprzedany'
                     stan->standard_sold_out = 1;
                     set_standard_now = 1;
                 }
-
-                // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
-                sem_op(semid, SEM_SHM, 1);
-
-                if (reserved && ile == 1) {
-                    // Cofamy rezerwację miejsca na proces
-                    rollback_process_slot(stan, semid);
-                }
-
-                break;
             }
 
             // Synchronizujemy się semaforem – pilnujemy kolejności i wykluczeń między procesami
             sem_op(semid, SEM_SHM, 1);
 
-            if (reserved) {
-                // Cofamy rezerwację miejsca na proces
+            if (!para_opiekun_dziecko && reserved && (ile != 2)) {
+                // Nie udało się sprzedać 2 biletów z kolegą -> zwracamy slot.
                 rollback_process_slot(stan, semid);
             }
+
+            if (ile > 0) break;
         }
 
         if (set_standard_now) {
@@ -542,8 +545,12 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (ile_sprzedane == 2 && friend_spawned && friend_id != -1) {
-            printf("[KASA %d] Sprzedano 2 bilety do sektora %d (drugi dla kolegi %d).\n", id, sektor, friend_id);
+        if (ile_sprzedane == 2) {
+            if (friend_spawned && friend_id != -1) {
+                printf("[KASA %d] Sprzedano 2 bilety do sektora %d (drugi dla kolegi %d).\n", id, sektor, friend_id);
+            } else {
+                printf("[KASA %d] Sprzedano 2 bilety do sektora %d (opiekun + dziecko).\n", id, sektor);
+            }
         } else {
             printf("[KASA %d] Sprzedano 1 bilet do sektora %d.\n", id, sektor);
         }

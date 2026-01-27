@@ -232,6 +232,12 @@ typedef struct {
 typedef struct {
     long mtype;
     int kibic_id;
+    /* Ile osób reprezentuje to żądanie przy kasie.
+     *  - zwykły kibic: 1
+     *  - dziecko z opiekunem: 2
+     * (ważne dla długości kolejki, sprzedaży biletów i limitów miejsc)
+     */
+    int grupa;
 } MsgKolejka;
 
 /* Typy wiadomości (vip lub zwykly kibic)*/
